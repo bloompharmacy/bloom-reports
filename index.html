@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bloom Report Tool</title>
+
+  <!-- Core libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+  <!-- PDF libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --brand:       #b22025;
+      --brand-dark:  #8c1519;
+      --brand-light: #faeaea;
+      --brand-mid:   #d94f53;
+      --gray-bg:     #f7f5f5;
+      --gray-border: #d9d0d0;
+      --gray-text:   #7a6b6b;
+      --text:        #2b1a1a;
+      --white:       #ffffff;
+      --danger:      #c0392b;
+      --radius:      12px;
+      --shadow:      0 2px 12px rgba(0,0,0,.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--gray-bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px 16px 64px;
+    }
+
+    /* ── Header ── */
+    header { text-align: center; margin-bottom: 40px; }
+    header .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--brand);
+      letter-spacing: -.5px;
+    }
+    header p { color: var(--gray-text); font-size: .95rem; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 28px;
+      max-width: 720px;
+      margin: 0 auto 24px;
+    }
+
+    /* ── Upload Area ── */
+    #drop-zone {
+      border: 2px dashed var(--gray-border);
+      border-radius: var(--radius);
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+    }
+    #drop-zone.drag-over { border-color: var(--brand); background: var(--brand-light); }
+    #drop-zone svg { color: var(--brand); margin-bottom: 12px; }
+    #drop-zone h2 { font-size: 1.1rem; margin-bottom: 6px; }
+    #drop-zone p { color: var(--gray-text); font-size: .875rem; margin-bottom: 16px; }
+    #drop-zone .badge {
+      display: inline-block;
+      background: var(--brand-light);
+      color: var(--brand);
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: .8rem;
+      font-weight: 600;
+      margin: 0 3px;
+    }
+    #file-input { display: none; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 22px;
+      border: none;
+      border-radius: 8px;
+      font-size: .9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, opacity .15s, transform .1s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+    .btn-primary { background: var(--brand); color: var(--white); }
+    .btn-primary:not(:disabled):hover { background: var(--brand-dark); }
+
+    .btn-outline {
+      background: var(--white);
+      color: var(--brand);
+      border: 2px solid var(--brand);
+    }
+    .btn-outline:not(:disabled):hover { background: var(--brand-light); }
+
+    .btn-ghost-pdf {
+      background: var(--white);
+      color: #555;
+      border: 2px solid var(--gray-border);
+    }
+    .btn-ghost-pdf:not(:disabled):hover { border-color: #999; background: #f5f5f5; }
+
+    .btn-danger-ghost {
+      background: none;
+      border: none;
+      color: var(--danger);
+      padding: 4px 8px;
+      font-size: .8rem;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+    .btn-danger-ghost:hover { background: #fdecea; }
+
+    /* ── File List ── */
+    #file-list-section { display: none; }
+    #file-list-section h3 {
+      font-size: .95rem;
+      font-weight: 700;
+      color: var(--gray-text);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 14px;
+    }
+    #file-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    #file-list li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--gray-bg);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: .875rem;
+    }
+    #file-list li .file-icon { flex-shrink: 0; color: var(--brand); }
+    #file-list li .file-name { flex: 1; font-weight: 500; word-break: break-all; }
+    #file-list li .file-size { color: var(--gray-text); white-space: nowrap; }
+
+    #clear-btn {
+      margin-top: 12px;
+      font-size: .82rem;
+      color: var(--gray-text);
+      background: none;
+      border: none;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+    #clear-btn:hover { color: var(--danger); }
+
+    /* ── Actions ── */
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+    /* ── Progress ── */
+    #progress-section { display: none; margin-top: 20px; }
+    #progress-label { font-size: .875rem; color: var(--gray-text); margin-bottom: 8px; }
+    #progress-bar-wrap {
+      background: var(--gray-border);
+      border-radius: 100px;
+      height: 8px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--brand), var(--brand-mid));
+      border-radius: 100px;
+      width: 0%;
+      transition: width .25s ease;
+    }
+
+    /* ── Result ── */
+    #result-section { display: none; }
+    .result-box {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: var(--brand-light);
+      border: 1.5px solid var(--brand-mid);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      flex-wrap: wrap;
+    }
+    .result-box .result-icon { flex-shrink: 0; color: var(--brand); }
+    .result-box .result-info { flex: 1; min-width: 160px; }
+    .result-box .result-info strong { display: block; font-size: .95rem; margin-bottom: 2px; word-break: break-all; }
+    .result-box .result-info span { font-size: .82rem; color: var(--gray-text); }
+    .result-box .result-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── Error ── */
+    #error-box {
+      display: none;
+      background: #fdecea;
+      border: 1.5px solid #e57373;
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      color: var(--danger);
+      font-size: .875rem;
+      max-width: 720px;
+      margin: 0 auto 16px;
+    }
+
+    /* ── PDF spinner overlay on button ── */
+    .btn-spinning { position: relative; pointer-events: none; }
+    .btn-spinning::after {
+      content: "";
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      color: var(--gray-text);
+      font-size: .8rem;
+      margin-top: 16px;
+    }
+
+    /* ── Hidden PDF render surface ── */
+    /* visibility:hidden blocks html2canvas — use off-screen + near-zero opacity instead */
+    #pdf-render-host {
+      position: absolute;
+      top: -9999px;
+      left: -9999px;
+      z-index: -1000;
+      opacity: 0.01;
+      pointer-events: none;
+    }
+
+    @media (max-width: 480px) {
+      header h1 { font-size: 1.5rem; }
+      .card { padding: 20px 16px; }
+      #drop-zone { padding: 36px 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <img src="https://bloompharmacy.github.io/bloom-reports/bloom-logo.jpg"
+         alt="Bloom Logo"
+         style="width:40px;height:40px;border-radius:50%;object-fit:cover;">
+    <h1>Bloom Report Tool</h1>
+  </div>
+  <p>Consolidate multiple supplier Excel files into one report — entirely in your browser.</p>
+</header>
+
+<div id="error-box"></div>
+
+<!-- Upload -->
+<div class="card">
+  <div id="drop-zone" role="button" tabindex="0" aria-label="Upload Excel files">
+    <svg width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round"
+        d="M12 16.5V9.75m0 0-3 3m3-3 3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775
+           5.25 5.25 0 0110.338-2.32 5.75 5.75 0 011.985 11.095H6.75z"/>
+    </svg>
+    <h2>Drop your Excel files here</h2>
+    <p>or click to browse — upload as many files as you need</p>
+    <span class="badge">.xlsx</span>
+    <span class="badge">.xls</span>
+    <input type="file" id="file-input" multiple accept=".xlsx,.xls" />
+  </div>
+</div>
+
+<!-- File List -->
+<div class="card" id="file-list-section">
+  <h3 id="file-count-label">0 files ready</h3>
+  <ul id="file-list"></ul>
+  <button id="clear-btn">Remove all files</button>
+</div>
+
+<!-- Actions -->
+<div class="card">
+  <div class="actions">
+    <!-- Merge -->
+    <button class="btn btn-primary" id="merge-btn" disabled>
+      <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7
+             48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662
+             M19.5 12l3-3m-3 3-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7
+             48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662
+             M4.5 12l3 3m-3-3-3 3"/>
+      </svg>
+      Merge Files
+    </button>
+    <!-- Excel download -->
+    <button class="btn btn-outline" id="download-excel-btn" disabled>
+      <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5
+             M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+      </svg>
+      Download Excel
+    </button>
+    <!-- PDF download -->
+    <button class="btn btn-ghost-pdf" id="download-pdf-btn" disabled>
+      <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5
+             A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25
+             m.75 12l3 3m0 0l3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25
+             c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+      </svg>
+      Download PDF
+    </button>
+  </div>
+
+  <div id="progress-section">
+    <div id="progress-label">Processing…</div>
+    <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+  </div>
+</div>
+
+<!-- Result -->
+<div class="card" id="result-section">
+  <div class="result-box">
+    <div class="result-icon">
+      <svg width="38" height="38" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+    </div>
+    <div class="result-info">
+      <strong id="result-title"></strong>
+      <span id="result-meta"></span>
+    </div>
+    <div class="result-actions">
+      <button class="btn btn-primary" id="result-excel-btn">
+        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5
+               M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/>
+        </svg>
+        Excel
+      </button>
+      <button class="btn btn-ghost-pdf" id="result-pdf-btn">
+        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5
+               A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25
+               m.75 12l3 3m0 0l3-3m-3 3v-6m-1.5-9H5.625c-.621 0-1.125.504-1.125 1.125v17.25
+               c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+        </svg>
+        PDF
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Off-screen surface where the PDF table is rendered by html2canvas -->
+<div id="pdf-render-host"></div>
+
+<footer>All processing happens locally in your browser. No data leaves your machine.</footer>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ═══════════════════════════════════════════════
+     Constants
+  ═══════════════════════════════════════════════ */
+  const BRAND_HEX   = '#b22025';
+  const BRAND_ARGB  = 'FFB22025';
+  const ZEBRA_ARGB  = 'FFF7F0F0';
+  const CHUNK_SIZE  = 300;          // rows yielded per setTimeout tick
+  const COL_MAX_W   = 60;
+  const COL_MIN_W   = 12;
+  const NUM_FMT     = '#,##0.00';
+  // A4 landscape at 96 dpi: 297mm = ~1122px wide, 210mm = ~794px tall
+  const PDF_PAGE_W_PT  = 841.89;   // jsPDF A4 landscape width  (pt)
+  const PDF_PAGE_H_PT  = 595.28;   // jsPDF A4 landscape height (pt)
+  const PDF_MARGIN_PT  = 24;
+  // px height of one "page slice" rendered by html2canvas (≈ A4 height at 96dpi, minus margins)
+  const PDF_SLICE_PX   = 700;
+
+  /* ═══════════════════════════════════════════════
+     State
+  ═══════════════════════════════════════════════ */
+  let files      = [];
+  let mergedData = null;   // { headers, allDataRows, isNumericCol, colWidths, totals, baseName }
+  let excelBlob  = null;
+  let outputName = '';
+
+  /* ═══════════════════════════════════════════════
+     DOM refs
+  ═══════════════════════════════════════════════ */
+  const $  = id => document.getElementById(id);
+  const dropZone        = $('drop-zone');
+  const fileInput       = $('file-input');
+  const fileListSec     = $('file-list-section');
+  const fileList        = $('file-list');
+  const fileCountLabel  = $('file-count-label');
+  const clearBtn        = $('clear-btn');
+  const mergeBtn        = $('merge-btn');
+  const dlExcelBtn      = $('download-excel-btn');
+  const dlPdfBtn        = $('download-pdf-btn');
+  const progressSec     = $('progress-section');
+  const progressLabel   = $('progress-label');
+  const progressBar     = $('progress-bar');
+  const resultSec       = $('result-section');
+  const resultTitle     = $('result-title');
+  const resultMeta      = $('result-meta');
+  const resultExcelBtn  = $('result-excel-btn');
+  const resultPdfBtn    = $('result-pdf-btn');
+  const errorBox        = $('error-box');
+  const pdfHost         = $('pdf-render-host');
+
+  /* ═══════════════════════════════════════════════
+     Utilities
+  ═══════════════════════════════════════════════ */
+  const fmtBytes = b => b < 1024 ? b + ' B'
+    : b < 1048576 ? (b / 1024).toFixed(1) + ' KB'
+    : (b / 1048576).toFixed(1) + ' MB';
+
+  const showError = msg => {
+    errorBox.textContent = '⚠ ' + msg;
+    errorBox.style.display = 'block';
+    setTimeout(() => { errorBox.style.display = 'none'; }, 7000);
+  };
+
+  const setProgress = (pct, label) => {
+    progressBar.style.width = pct + '%';
+    progressLabel.textContent = label;
+  };
+
+  // Yield to the browser event loop (allows repaints, keeps UI responsive)
+  const yieldToUI = () => new Promise(r => setTimeout(r, 0));
+
+  const toNum = v => {
+    if (typeof v === 'number') return v;
+    if (v === '' || v == null) return NaN;
+    return Number(String(v).replace(/,/g, ''));
+  };
+
+  /* ═══════════════════════════════════════════════
+     File management & UI
+  ═══════════════════════════════════════════════ */
+  const addFiles = newFiles => {
+    const valid   = [...newFiles].filter(f => /\.(xlsx|xls)$/i.test(f.name));
+    const skipped = newFiles.length - valid.length;
+    if (skipped) showError(`${skipped} file(s) skipped — only .xlsx and .xls are supported.`);
+    valid.forEach(f => {
+      if (!files.find(x => x.name === f.name && x.size === f.size)) files.push(f);
+    });
+    renderFileList();
+  };
+
+  const renderFileList = () => {
+    fileList.innerHTML = '';
+    files.forEach((f, i) => {
+      const li = document.createElement('li');
+      li.innerHTML = `
+        <span class="file-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5
+                 A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25
+                 m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25
+                 c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/>
+          </svg>
+        </span>
+        <span class="file-name">${f.name}</span>
+        <span class="file-size">${fmtBytes(f.size)}</span>
+        <button class="btn-danger-ghost" data-idx="${i}" title="Remove">✕</button>`;
+      fileList.appendChild(li);
+    });
+    fileListSec.style.display  = files.length ? 'block' : 'none';
+    fileCountLabel.textContent = `${files.length} file${files.length !== 1 ? 's' : ''} ready`;
+    mergeBtn.disabled          = files.length < 1;
+    dlExcelBtn.disabled        = true;
+    dlPdfBtn.disabled          = true;
+    resultSec.style.display    = 'none';
+    excelBlob  = null;
+    mergedData = null;
+  };
+
+  fileList.addEventListener('click', e => {
+    const btn = e.target.closest('[data-idx]');
+    if (!btn) return;
+    files.splice(+btn.dataset.idx, 1);
+    renderFileList();
+  });
+  clearBtn.addEventListener('click', () => { files = []; renderFileList(); });
+
+  /* ── Drop zone ── */
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+  });
+  fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    addFiles(e.dataTransfer.files);
+  });
+
+  /* ═══════════════════════════════════════════════
+     SheetJS: read one file → array-of-arrays
+  ═══════════════════════════════════════════════ */
+  const readSheetFile = file => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb   = XLSX.read(e.target.result, { type: 'array', cellDates: true });
+        const ws   = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        resolve(rows);
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = () => reject(new Error('Failed to read ' + file.name));
+    reader.readAsArrayBuffer(file);
+  });
+
+  /* ═══════════════════════════════════════════════
+     PHASE 1 — Read all files, filter ERP footers
+              Runs async, file-by-file (already
+              yields at each FileReader boundary).
+  ═══════════════════════════════════════════════ */
+  const collectRows = async () => {
+    let headers     = null;
+    let mandatoryIdxs = [0];
+    const allDataRows = [];
+
+    for (let i = 0; i < files.length; i++) {
+      setProgress(
+        Math.round((i / files.length) * 40),
+        `Reading file ${i + 1} of ${files.length}: ${files[i].name}…`
+      );
+      await yieldToUI();
+
+      const rows = await readSheetFile(files[i]);
+      if (rows.length === 0) continue;
+
+      if (headers === null) {
+        headers = rows[0];
+        // Identify mandatory identifier columns (Arabic item code / item name)
+        const targets = ['كود الصنف', 'الــصـــــــنــف', 'الصنف', 'item code', 'item name'];
+        const found = headers.reduce((acc, h, ci) => {
+          if (targets.some(t => String(h).trim().toLowerCase() === t.toLowerCase())) acc.push(ci);
+          return acc;
+        }, []);
+        if (found.length) mandatoryIdxs = found;
+      }
+
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        if (row.every(c => c === '' || c == null)) continue;
+        // Drop ERP footer rows: rows where every mandatory id column is blank
+        const hasId = mandatoryIdxs.some(idx => {
+          const v = row[idx];
+          return v !== '' && v != null;
+        });
+        if (!hasId) continue;
+        allDataRows.push(row);
+      }
+    }
+
+    return { headers, allDataRows };
+  };
+
+  /* ═══════════════════════════════════════════════
+     PHASE 2 — Single O(N) analysis pass
+              Detects numeric cols, accumulates
+              column widths, and computes totals
+              — all in one loop with chunked yields.
+  ═══════════════════════════════════════════════ */
+  const analyseRows = async (headers, allDataRows) => {
+    const colCount     = headers.length;
+    const isNumericCol = new Array(colCount).fill(true);
+    isNumericCol[0]    = false;                          // col 0 holds "TOTAL" label
+    const colSums      = new Array(colCount).fill(0);
+    // Seed widths from headers
+    const colMaxWidth  = headers.map(h => Math.min(String(h).length + 4, COL_MAX_W));
+
+    const total = allDataRows.length;
+
+    for (let i = 0; i < total; i++) {
+      const row = allDataRows[i];
+
+      for (let c = 0; c < colCount; c++) {
+        const v   = row[c];
+        const str = (v == null || v === '') ? '' : String(v);
+
+        // Width tracking
+        const len = Math.min(str.length + 2, COL_MAX_W);
+        if (len > colMaxWidth[c]) colMaxWidth[c] = len;
+
+        // Numeric detection + running sum
+        if (isNumericCol[c]) {
+          if (str !== '') {
+            const n = toNum(v);
+            if (isNaN(n)) {
+              isNumericCol[c] = false;
+            } else {
+              colSums[c] += n;
+            }
+          }
+        }
+      }
+
+      // Yield every CHUNK_SIZE rows so the progress bar can repaint
+      if ((i + 1) % CHUNK_SIZE === 0) {
+        const pct = 40 + Math.round(((i + 1) / total) * 20);
+        setProgress(pct, `Analysing rows… ${(i + 1).toLocaleString()} / ${total.toLocaleString()}`);
+        await yieldToUI();
+      }
+    }
+
+    // Build totals row
+    const totals = isNumericCol.map((isNum, c) => {
+      if (c === 0) return 'TOTAL';
+      return isNum ? colSums[c] : '';
+    });
+
+    // Clamp widths
+    const colWidths = colMaxWidth.map(w => Math.max(Math.min(w, COL_MAX_W), COL_MIN_W));
+
+    return { isNumericCol, colWidths, totals };
+  };
+
+  /* ═══════════════════════════════════════════════
+     PHASE 3 — ExcelJS single write pass
+              Adds every row ONCE.
+              Formatting is applied inline on the
+              freshly-returned row object — no
+              second getRow() lookups.
+  ═══════════════════════════════════════════════ */
+  const buildExcel = async (headers, allDataRows, isNumericCol, colWidths, totals) => {
+    setProgress(62, 'Building Excel workbook…');
+    await yieldToUI();
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Bloom Report Tool';
+    const sheet = workbook.addWorksheet('Consolidated Report');
+
+    const colCount = headers.length;
+
+    /* ── Header row ── */
+    const headerRow = sheet.addRow(headers);
+    headerRow.height = 22;
+    headerRow.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
+    for (let c = 1; c <= colCount; c++) {
+      const cell = headerRow.getCell(c);
+      cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND_ARGB } };
+      cell.border = { bottom: { style: 'thin', color: { argb: BRAND_ARGB } } };
+    }
+
+    /* ── Data rows — single pass with inline formatting ── */
+    const total = allDataRows.length;
+    for (let i = 0; i < total; i++) {
+      const rawRow = allDataRows[i];
+      // Coerce numeric values once, build the value array for addRow
+      const values = rawRow.map((v, c) => {
+        if (!isNumericCol[c]) return v;
+        const n = toNum(v);
+        return isNaN(n) ? v : n;
+      });
+
+      const row = sheet.addRow(values);
+      row.alignment = { vertical: 'middle' };
+
+      // Zebra striping — applied per-cell so fill stops at colCount, not at Excel's last column
+      if (row.number % 2 === 0) {
+        for (let c = 1; c <= colCount; c++) {
+          row.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ZEBRA_ARGB } };
+        }
+      }
+
+      // Inline number formatting on numeric cells — uses the row object we just got,
+      // so no getRow() lookup cost
+      for (let c = 0; c < colCount; c++) {
+        if (isNumericCol[c]) {
+          row.getCell(c + 1).numFmt = NUM_FMT;
+        }
+      }
+
+      // Yield every CHUNK_SIZE rows
+      if ((i + 1) % CHUNK_SIZE === 0) {
+        const pct = 62 + Math.round(((i + 1) / total) * 20);
+        setProgress(pct, `Writing rows… ${(i + 1).toLocaleString()} / ${total.toLocaleString()}`);
+        await yieldToUI();
+      }
+    }
+
+    /* ── TOTAL row ── */
+    const totalRow = sheet.addRow(totals);
+    totalRow.height    = 22;
+    totalRow.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+    totalRow.alignment = { vertical: 'middle', horizontal: 'center' };
+    for (let c = 1; c <= colCount; c++) {
+      const cell = totalRow.getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND_ARGB } };
+      if (isNumericCol[c - 1]) cell.numFmt = NUM_FMT;
+    }
+
+    /* ── Column widths (O(M), already computed) ── */
+    sheet.columns.forEach((col, i) => { col.width = colWidths[i]; });
+
+    /* ── Sheet settings ── */
+    sheet.views = [{ rightToLeft: true, state: 'frozen', xSplit: 0, ySplit: 1, activeCell: 'A2' }];
+    sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: colCount } };
+
+    setProgress(85, 'Serialising workbook…');
+    await yieldToUI();
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+  };
+
+  /* ═══════════════════════════════════════════════
+     PHASE 4 — PDF generation
+              Builds a styled HTML table off-DOM,
+              slices it into A4-height segments,
+              renders each via html2canvas, and
+              stitches into a jsPDF document.
+              Arabic renders correctly because the
+              browser's own HarfBuzz engine does
+              shaping — no reshaper library needed.
+  ═══════════════════════════════════════════════ */
+  const buildPDF = async (headers, allDataRows, isNumericCol, totals, baseName) => {
+    setProgress(0, 'Preparing PDF table…');
+    await yieldToUI();
+
+    /* ── Build the off-DOM table ── */
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = `
+      width: 1754px;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      font-size: 11px;
+      direction: rtl;
+      background: #fff;
+      padding: 0;
+    `;
+
+    const table = document.createElement('table');
+    table.style.cssText = `
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    `;
+
+    const colCount = headers.length;
+    const colW     = Math.floor(1754 / colCount);
+
+    /* colgroup for uniform widths */
+    const cg = document.createElement('colgroup');
+    headers.forEach(() => {
+      const col = document.createElement('col');
+      col.style.width = colW + 'px';
+      cg.appendChild(col);
+    });
+    table.appendChild(cg);
+
+    /* thead */
+    const thead = document.createElement('thead');
+    const htr   = document.createElement('tr');
+    headers.forEach(h => {
+      const th = document.createElement('th');
+      th.textContent = h == null ? '' : String(h);
+      th.style.cssText = `
+        background: ${BRAND_HEX};
+        color: #fff;
+        font-weight: 700;
+        padding: 6px 4px;
+        text-align: center;
+        border: 1px solid #8c1519;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      `;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+
+    /* tbody — chunked DOM insertion */
+    const tbody = document.createElement('tbody');
+    const total = allDataRows.length;
+    for (let i = 0; i < total; i++) {
+      const row = allDataRows[i];
+      const tr  = document.createElement('tr');
+      tr.style.background = (i % 2 === 1) ? '#fdf2f2' : '#ffffff';
+      row.forEach((v, c) => {
+        const td = document.createElement('td');
+        let display = (v == null || v === '') ? '' : String(v);
+        if (isNumericCol[c]) {
+          const n = toNum(v);
+          display = isNaN(n) ? display : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+        td.textContent = display;
+        td.style.cssText = `
+          padding: 4px;
+          border: 1px solid #e0d0d0;
+          overflow: hidden;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          text-align: ${isNumericCol[c] ? 'center' : 'right'};
+        `;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+
+      if ((i + 1) % CHUNK_SIZE === 0) {
+        const pct = Math.round(((i + 1) / total) * 25);
+        setProgress(pct, `Building PDF table… ${(i + 1).toLocaleString()} / ${total.toLocaleString()}`);
+        await yieldToUI();
+      }
+    }
+
+    /* tfoot — TOTAL row */
+    const tfoot = document.createElement('tfoot');
+    const ftr   = document.createElement('tr');
+    totals.forEach((v, c) => {
+      const td = document.createElement('td');
+      let display = (v == null || v === '') ? '' : String(v);
+      if (isNumericCol[c] && typeof v === 'number') {
+        display = v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      td.textContent = display;
+      td.style.cssText = `
+        background: ${BRAND_HEX};
+        color: #fff;
+        font-weight: 700;
+        padding: 6px 4px;
+        border: 1px solid #8c1519;
+        text-align: center;
+        overflow: hidden;
+        white-space: nowrap;
+      `;
+      ftr.appendChild(td);
+    });
+    tfoot.appendChild(ftr);
+    table.appendChild(tbody);
+    table.appendChild(tfoot);
+    wrapper.appendChild(table);
+
+    /* Attach to the hidden host so the browser lays it out */
+    pdfHost.innerHTML = '';
+    pdfHost.appendChild(wrapper);
+    // Force a layout flush
+    void wrapper.offsetHeight;
+    await yieldToUI();
+
+    setProgress(28, 'Rendering PDF pages…');
+    await yieldToUI();
+
+    /* ── Slice the table into page-height segments and render each ── */
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+
+    const contentW = PDF_PAGE_W_PT - PDF_MARGIN_PT * 2;
+    const contentH = PDF_PAGE_H_PT - PDF_MARGIN_PT * 2;
+
+    const fullHeight  = wrapper.scrollHeight;
+    const fullWidth   = wrapper.scrollWidth;
+    const totalSlices = Math.ceil(fullHeight / PDF_SLICE_PX);
+
+    for (let s = 0; s < totalSlices; s++) {
+      const yOffset  = s * PDF_SLICE_PX;
+      const sliceH   = Math.min(PDF_SLICE_PX, fullHeight - yOffset);
+
+      const canvas = await html2canvas(wrapper, {
+        scale:           2,            // 2× for sharp text on retina/print
+        useCORS:         true,
+        allowTaint:      true,
+        backgroundColor: '#ffffff',
+        x:               0,
+        y:               yOffset,
+        width:           fullWidth,
+        height:          sliceH,
+        windowWidth:     fullWidth,
+        windowHeight:    fullHeight,
+        scrollY:         -yOffset,
+        logging:         false,
+      });
+
+      const imgData  = canvas.toDataURL('image/jpeg', 0.92);
+      const imgRatio = canvas.width / canvas.height;         // = fullWidth / sliceH (at scale 2 both numerator/denominator ×2, cancels)
+      const imgW     = contentW;
+      const imgH     = imgW / imgRatio;
+
+      if (s > 0) pdf.addPage('a4', 'landscape');
+      pdf.addImage(imgData, 'JPEG', PDF_MARGIN_PT, PDF_MARGIN_PT, imgW, Math.min(imgH, contentH));
+
+      const pct = 28 + Math.round(((s + 1) / totalSlices) * 65);
+      setProgress(pct, `Rendering page ${s + 1} of ${totalSlices}…`);
+      await yieldToUI();
+    }
+
+    /* Cleanup */
+    pdfHost.innerHTML = '';
+
+    setProgress(95, 'Finalising PDF…');
+    await yieldToUI();
+
+    const pdfName = (baseName || 'Report').replace(/\s+/g, '_') + '_Consolidated_Report.pdf';
+    pdf.save(pdfName);
+    setProgress(100, 'PDF saved!');
+  };
+
+  /* ═══════════════════════════════════════════════
+     Merge orchestration
+  ═══════════════════════════════════════════════ */
+  mergeBtn.addEventListener('click', async () => {
+    errorBox.style.display  = 'none';
+    resultSec.style.display = 'none';
+    progressSec.style.display = 'block';
+    mergeBtn.disabled     = true;
+    dlExcelBtn.disabled   = true;
+    dlPdfBtn.disabled     = true;
+    excelBlob  = null;
+    mergedData = null;
+    setProgress(0, 'Starting…');
+
+    try {
+      /* Phase 1: read */
+      const { headers, allDataRows } = await collectRows();
+
+      if (!headers || allDataRows.length === 0) {
+        throw new Error('No data rows found in the uploaded files.');
+      }
+
+      /* Phase 2: analyse (single pass) */
+      setProgress(40, 'Analysing data…');
+      await yieldToUI();
+      const { isNumericCol, colWidths, totals } = await analyseRows(headers, allDataRows);
+
+      /* Derive output base name */
+      const baseName = files[0].name
+        .replace(/\s*(branch\s*\d+|_\d+|\d+)\s*/gi, '')
+        .replace(/\.(xlsx|xls)$/i, '')
+        .trim();
+
+      /* Cache for PDF use */
+      mergedData = { headers, allDataRows, isNumericCol, colWidths, totals, baseName };
+
+      /* Phase 3: build Excel (single write pass) */
+      excelBlob  = await buildExcel(headers, allDataRows, isNumericCol, colWidths, totals);
+      outputName = (baseName || 'Report').replace(/\s+/g, '_') + '_Consolidated_Report.xlsx';
+
+      setProgress(100, 'Done!');
+      await yieldToUI();
+
+      setTimeout(() => {
+        progressSec.style.display = 'none';
+        resultSec.style.display   = 'block';
+        resultTitle.textContent   = outputName;
+        resultMeta.textContent    =
+          `${allDataRows.length.toLocaleString()} data rows · ${files.length} files merged`;
+        dlExcelBtn.disabled = false;
+        dlPdfBtn.disabled   = false;
+        mergeBtn.disabled   = files.length < 1;
+      }, 350);
+
+    } catch (err) {
+      progressSec.style.display = 'none';
+      mergeBtn.disabled = false;
+      showError(err.message || 'An unexpected error occurred.');
+      console.error(err);
+    }
+  });
+
+  /* ═══════════════════════════════════════════════
+     Excel download
+  ═══════════════════════════════════════════════ */
+  const triggerExcelDownload = () => {
+    if (!excelBlob) return;
+    const url = URL.createObjectURL(excelBlob);
+    const a   = document.createElement('a');
+    a.href     = url;
+    a.download = outputName;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  };
+
+  dlExcelBtn.addEventListener('click',    triggerExcelDownload);
+  resultExcelBtn.addEventListener('click', triggerExcelDownload);
+
+  /* ═══════════════════════════════════════════════
+     PDF download
+  ═══════════════════════════════════════════════ */
+  const triggerPdfDownload = async btn => {
+    if (!mergedData) return;
+    btn.classList.add('btn-spinning');
+    btn.disabled = true;
+
+    // Show progress UI
+    resultSec.style.display    = 'none';
+    progressSec.style.display  = 'block';
+    mergeBtn.disabled          = true;
+    dlExcelBtn.disabled        = true;
+    dlPdfBtn.disabled          = true;
+
+    try {
+      const { headers, allDataRows, isNumericCol, totals, baseName } = mergedData;
+      await buildPDF(headers, allDataRows, isNumericCol, totals, baseName);
+    } catch (err) {
+      showError('PDF generation failed: ' + (err.message || err));
+      console.error(err);
+    } finally {
+      btn.classList.remove('btn-spinning');
+      progressSec.style.display = 'none';
+      resultSec.style.display   = 'block';
+      btn.disabled              = false;
+      mergeBtn.disabled         = files.length < 1;
+      dlExcelBtn.disabled       = false;
+      dlPdfBtn.disabled         = false;
+    }
+  };
+
+  dlPdfBtn.addEventListener('click',    () => triggerPdfDownload(dlPdfBtn));
+  resultPdfBtn.addEventListener('click', () => triggerPdfDownload(resultPdfBtn));
+
+})();
+</script>
+</body>
+</html>
