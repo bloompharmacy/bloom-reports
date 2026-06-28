@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sellout Report Converter — Softech ERP → Excel</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+
+        /* ── Drag-over highlight ── */
+        #drop-zone.drag-active {
+            border-color: #0d9488;
+            background-color: rgba(13,148,136,0.05);
+        }
+
+        /* ── File chip animations ── */
+        @keyframes fadeSlideIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .file-chip { animation: fadeSlideIn 0.2s ease both; }
+
+        /* ── Progress bar fill ── */
+        .bar-fill { transition: width 0.4s ease; }
+
+        /* ── Sheet badge colours (cycle through 8 distinct tones) ── */
+        .sheet-badge-0  { background:#dbeafe; color:#1e40af; }
+        .sheet-badge-1  { background:#dcfce7; color:#166534; }
+        .sheet-badge-2  { background:#fef9c3; color:#854d0e; }
+        .sheet-badge-3  { background:#fce7f3; color:#9d174d; }
+        .sheet-badge-4  { background:#ede9fe; color:#4c1d95; }
+        .sheet-badge-5  { background:#ffedd5; color:#9a3412; }
+        .sheet-badge-6  { background:#cffafe; color:#155e75; }
+        .sheet-badge-7  { background:#f1f5f9; color:#334155; }
+    </style>
+</head>
+
+<body class="bg-slate-50 min-h-screen flex flex-col text-slate-800">
+
+<!-- ════════════════════════════════════════════════════════
+     HEADER
+═════════════════════════════════════════════════════════ -->
+<header class="bg-white border-b border-slate-200 py-5 px-8 shadow-sm">
+    <div class="max-w-5xl mx-auto flex justify-between items-center">
+        <div class="flex items-center gap-3">
+            <div class="bg-teal-600 text-white p-2.5 rounded-xl shadow-md shadow-teal-100">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold text-slate-900">Sellout Report Converter</h1>
+                <p class="text-xs text-slate-400 mt-0.5">Softech ERP .htm exports → structured Excel workbook</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="text-xs font-semibold px-3 py-1 bg-teal-50 text-teal-700 border border-teal-200 rounded-full">
+                100% browser-local · no data sent anywhere
+            </span>
+        </div>
+    </div>
+</header>
+
+
+<!-- ════════════════════════════════════════════════════════
+     MAIN
+═════════════════════════════════════════════════════════ -->
+<main class="max-w-3xl w-full mx-auto p-6 flex-1 flex flex-col gap-6">
+
+    <!-- ── HOW IT WORKS BANNER ── -->
+    <div class="bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 flex gap-3 items-start text-sm text-blue-800">
+        <svg class="w-5 h-5 mt-0.5 shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 110 20A10 10 0 0112 2z"/>
+        </svg>
+        <div>
+            <p class="font-semibold mb-1">How to use</p>
+            <ol class="list-decimal list-inside space-y-0.5 text-blue-700 text-xs">
+                <li>Drop one or more Softech sellout <strong>.htm</strong> files onto the zone below.</li>
+                <li>Each file becomes a separate sheet named after the file.</li>
+                <li>Columns extracted: <code class="bg-blue-100 px-1 rounded">code · item · quantity · total</code></li>
+                <li>Click <strong>Download Excel</strong> to get a single workbook with all sheets.</li>
+            </ol>
+        </div>
+    </div>
+
+    <!-- ── DROP ZONE ── -->
+    <div class="bg-white rounded-2xl shadow-xl border border-slate-100 p-8">
+
+        <div id="drop-zone"
+             class="border-2 border-dashed border-slate-300 rounded-xl p-10 flex flex-col items-center
+                    justify-center cursor-pointer transition-all duration-200 group">
+
+            <input type="file" id="file-input" class="hidden" accept=".htm,.html" multiple>
+
+            <div class="bg-white p-4 rounded-full shadow-md group-hover:scale-110 transition-transform
+                        duration-200 mb-4 text-slate-400 group-hover:text-teal-600">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+            </div>
+
+            <h3 class="text-base font-semibold text-slate-700 mb-1">
+                Drop Softech .htm files here
+            </h3>
+            <p class="text-xs text-slate-400 mb-4 text-center">
+                Supports multiple files — each becomes a separate Excel sheet
+            </p>
+            <span class="text-xs px-4 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-lg
+                         shadow-sm font-medium group-hover:bg-teal-600 group-hover:text-white
+                         group-hover:border-teal-600 transition-colors">
+                Browse files
+            </span>
+        </div>
+
+        <!-- ── QUEUED FILE CHIPS ── -->
+        <div id="file-list" class="hidden mt-5">
+            <div class="flex items-center justify-between mb-2">
+                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Files queued</p>
+                <button id="clear-btn"
+                        class="text-xs text-rose-500 hover:text-rose-700 font-medium transition-colors">
+                    Clear all
+                </button>
+            </div>
+            <div id="file-chips" class="flex flex-col gap-2"></div>
+        </div>
+
+        <!-- ── PROCESS BUTTON ── -->
+        <div id="process-section" class="hidden mt-5">
+            <button id="process-btn"
+                    class="w-full py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-semibold
+                           text-sm shadow-md shadow-teal-100 transition-colors flex items-center justify-center gap-2">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                Extract &amp; Build Excel Workbook
+            </button>
+        </div>
+
+        <!-- ── STATUS AREA ── -->
+        <div id="status-container" class="hidden mt-5 space-y-3">
+
+            <!-- LOADING -->
+            <div id="status-loading" class="hidden items-center gap-3 p-4 bg-blue-50 border border-blue-200
+                                             text-blue-700 rounded-xl">
+                <svg class="animate-spin h-5 w-5 text-blue-600 shrink-0" xmlns="http://www.w3.org/2000/svg"
+                     fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                </svg>
+                <div>
+                    <p class="text-sm font-semibold" id="loading-title">Processing files…</p>
+                    <p class="text-xs text-blue-500 mt-0.5" id="loading-sub">Please wait</p>
+                </div>
+            </div>
+
+            <!-- PER-FILE PROGRESS LIST -->
+            <div id="progress-list" class="hidden space-y-2"></div>
+
+            <!-- SUCCESS -->
+            <div id="status-success"
+                 class="hidden items-center justify-between p-4 bg-emerald-50 border border-emerald-200
+                        text-emerald-800 rounded-xl">
+                <div class="flex items-center gap-3">
+                    <svg class="w-6 h-6 text-emerald-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <div>
+                        <p class="text-sm font-bold">Workbook ready!</p>
+                        <p class="text-xs text-emerald-600 mt-0.5" id="success-meta">—</p>
+                    </div>
+                </div>
+                <button id="download-btn"
+                        class="text-xs font-bold px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white
+                               rounded-lg shadow-md transition-colors flex items-center gap-1.5 shrink-0">
+                    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Download Excel
+                </button>
+            </div>
+
+            <!-- ERROR -->
+            <div id="status-error"
+                 class="hidden items-start gap-3 p-4 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl">
+                <svg class="w-6 h-6 text-rose-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div>
+                    <p class="text-sm font-bold">Processing failed</p>
+                    <p class="text-xs text-rose-600 mt-1 leading-relaxed" id="error-message">—</p>
+                </div>
+            </div>
+
+        </div><!-- /status-container -->
+
+        <!-- ── SHEET PREVIEW TABLE ── -->
+        <div id="preview-section" class="hidden mt-6">
+            <div class="flex items-center justify-between mb-3">
+                <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">Extracted sheets</p>
+                <span class="text-xs text-slate-400" id="preview-total-label"></span>
+            </div>
+            <div id="preview-cards" class="space-y-4"></div>
+        </div>
+
+    </div><!-- /card -->
+</main>
+
+
+<!-- ════════════════════════════════════════════════════════
+     FOOTER
+═════════════════════════════════════════════════════════ -->
+<footer class="bg-white border-t border-slate-200 py-4 px-8 text-center text-xs text-slate-400">
+    All processing happens locally inside your browser. No data is uploaded or shared externally.
+</footer>
+
+
+<!-- ════════════════════════════════════════════════════════
+     JAVASCRIPT
+═════════════════════════════════════════════════════════ -->
+<script>
+/* ─────────────────────────────────────────────────────────
+   CONSTANTS & GLOBALS
+───────────────────────────────────────────────────────── */
+
+const EXCEL_COLUMNS = [
+    { key: 'code',     header: 'code',     width: 12 },
+    { key: 'item',     header: 'item',     width: 50 },
+    { key: 'quantity', header: 'quantity', width: 14 },
+    { key: 'total',    header: 'total',    width: 14 },
+];
+
+// Softech HTM data rows are identified by a hidden TD (visibility:hidden)
+// Per-row column layout (colspan-based):
+//   [0] TD visibility:hidden  → code
+//   [1] TD colspan=2          → profit (SKIP)
+//   [2] TD colspan=2          → total  ✓
+//   [3] TD colspan=3          → quantity ✓
+//   [4] TD colspan=3          → supplier (SKIP)
+//   [5] TD colspan=7          → item name ✓
+//   [6] TD align=center       → code duplicate (SKIP — use hidden one)
+
+let queuedFiles   = [];   // File objects waiting to be processed
+let generatedBlob = null; // Final xlsx Blob for download
+let outputName    = 'Sellout_Export.xlsx';
+
+/* ─────────────────────────────────────────────────────────
+   DOM REFS
+───────────────────────────────────────────────────────── */
+const dropZone       = document.getElementById('drop-zone');
+const fileInput      = document.getElementById('file-input');
+const fileListEl     = document.getElementById('file-list');
+const fileChipsEl    = document.getElementById('file-chips');
+const clearBtn       = document.getElementById('clear-btn');
+const processSec     = document.getElementById('process-section');
+const processBtn     = document.getElementById('process-btn');
+const statusCont     = document.getElementById('status-container');
+const statusLoading  = document.getElementById('status-loading');
+const loadingTitle   = document.getElementById('loading-title');
+const loadingSub     = document.getElementById('loading-sub');
+const progressList   = document.getElementById('progress-list');
+const statusSuccess  = document.getElementById('status-success');
+const successMeta    = document.getElementById('success-meta');
+const downloadBtn    = document.getElementById('download-btn');
+const statusError    = document.getElementById('status-error');
+const errorMessage   = document.getElementById('error-message');
+const previewSec     = document.getElementById('preview-section');
+const previewCards   = document.getElementById('preview-cards');
+const previewTotalLb = document.getElementById('preview-total-label');
+
+
+/* ─────────────────────────────────────────────────────────
+   DROP ZONE EVENTS
+───────────────────────────────────────────────────────── */
+dropZone.addEventListener('click', () => fileInput.click());
+
+['dragenter', 'dragover'].forEach(ev =>
+    dropZone.addEventListener(ev, e => {
+        e.preventDefault();
+        dropZone.classList.add('drag-active');
+    })
+);
+
+['dragleave', 'drop'].forEach(ev =>
+    dropZone.addEventListener(ev, e => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-active');
+    })
+);
+
+dropZone.addEventListener('drop', e => {
+    const files = Array.from(e.dataTransfer.files).filter(f => isHtmFile(f));
+    if (files.length) addFiles(files);
+    else showToast('Please drop .htm or .html files only.');
+});
+
+fileInput.addEventListener('change', e => {
+    const files = Array.from(e.target.files);
+    if (files.length) addFiles(files);
+    fileInput.value = ''; // reset so same file can be re-added after clear
+});
+
+clearBtn.addEventListener('click', clearQueue);
+processBtn.addEventListener('click', runExtraction);
+downloadBtn.addEventListener('click', () => {
+    if (generatedBlob) saveAs(generatedBlob, outputName);
+});
+
+
+/* ─────────────────────────────────────────────────────────
+   FILE QUEUE MANAGEMENT
+───────────────────────────────────────────────────────── */
+function isHtmFile(f) {
+    return /\.(htm|html)$/i.test(f.name);
+}
+
+function addFiles(newFiles) {
+    // Deduplicate by name
+    const existing = new Set(queuedFiles.map(f => f.name));
+    newFiles.forEach(f => {
+        if (!existing.has(f.name)) {
+            queuedFiles.push(f);
+            existing.add(f.name);
+        }
+    });
+    renderFileChips();
+    // Reset prior results when new files are added
+    resetStatus();
+}
+
+function clearQueue() {
+    queuedFiles = [];
+    generatedBlob = null;
+    renderFileChips();
+    resetStatus();
+    previewSec.classList.add('hidden');
+}
+
+function removeFile(name) {
+    queuedFiles = queuedFiles.filter(f => f.name !== name);
+    renderFileChips();
+    if (queuedFiles.length === 0) {
+        resetStatus();
+        previewSec.classList.add('hidden');
+    }
+}
+
+function renderFileChips() {
+    fileChipsEl.innerHTML = '';
+
+    if (queuedFiles.length === 0) {
+        fileListEl.classList.add('hidden');
+        processSec.classList.add('hidden');
+        return;
+    }
+
+    fileListEl.classList.remove('hidden');
+    processSec.classList.remove('hidden');
+
+    queuedFiles.forEach((file, idx) => {
+        const badgeClass = `sheet-badge-${idx % 8}`;
+        const sizeKb     = (file.size / 1024).toFixed(1);
+        const chip = document.createElement('div');
+        chip.className = 'file-chip flex items-center justify-between gap-3 px-3 py-2.5 ' +
+                         'bg-slate-50 border border-slate-200 rounded-lg text-sm';
+        chip.innerHTML = `
+            <div class="flex items-center gap-2 min-w-0">
+                <span class="text-lg">📄</span>
+                <div class="min-w-0">
+                    <p class="font-medium text-slate-700 truncate">${escHtml(file.name)}</p>
+                    <p class="text-xs text-slate-400">${sizeKb} KB</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+                <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">
+                    Sheet ${idx + 1}
+                </span>
+                <button onclick="removeFile('${escHtml(file.name)}')"
+                        class="text-slate-300 hover:text-rose-500 transition-colors text-lg leading-none"
+                        title="Remove">×</button>
+            </div>`;
+        fileChipsEl.appendChild(chip);
+    });
+
+    // Update process button label
+    processBtn.querySelector('span') && (processBtn.querySelector('span').textContent = '');
+    processBtn.innerHTML = `
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        Extract &amp; Build Excel Workbook
+        <span class="bg-white/20 text-white text-xs font-bold px-2 py-0.5 rounded-full ml-1">
+            ${queuedFiles.length} file${queuedFiles.length > 1 ? 's' : ''}
+        </span>`;
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   RESET UI STATE
+───────────────────────────────────────────────────────── */
+function resetStatus() {
+    statusCont.classList.add('hidden');
+    [statusLoading, statusSuccess, statusError, progressList].forEach(el => {
+        el.classList.add('hidden');
+        el.classList.remove('flex');
+    });
+    generatedBlob = null;
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   MAIN EXTRACTION PIPELINE
+───────────────────────────────────────────────────────── */
+async function runExtraction() {
+    if (!queuedFiles.length) return;
+
+    resetStatus();
+    statusCont.classList.remove('hidden');
+    statusLoading.classList.remove('hidden');
+    statusLoading.classList.add('flex');
+    progressList.classList.remove('hidden');
+    progressList.innerHTML = '';
+    previewSec.classList.add('hidden');
+    previewCards.innerHTML = '';
+
+    loadingTitle.textContent = `Processing ${queuedFiles.length} file${queuedFiles.length > 1 ? 's' : ''}…`;
+    loadingSub.textContent   = 'Extracting table data from Softech reports';
+
+    const workbook  = new ExcelJS.Workbook();
+    const results   = [];   // { name, sheetName, rows, error }
+    let totalRows   = 0;
+
+    for (let i = 0; i < queuedFiles.length; i++) {
+        const file      = queuedFiles[i];
+        const sheetName = sanitiseSheetName(stemName(file.name), i);
+        const progressId = `prog-${i}`;
+
+        // Add progress row for this file
+        appendProgressRow(progressList, progressId, file.name, sheetName, i);
+
+        try {
+            const htmlText = await readFileAsText(file);
+            const rows     = parseHtmReport(htmlText);
+
+            if (rows.length === 0) {
+                throw new Error('No sellout data rows found. Confirm this is a Softech sellout report.');
+            }
+
+            await buildWorksheet(workbook, sheetName, rows);
+            results.push({ name: file.name, sheetName, rows, error: null });
+            totalRows += rows.length;
+            setProgressDone(progressId, rows.length);
+
+        } catch (err) {
+            results.push({ name: file.name, sheetName, rows: [], error: err.message });
+            setProgressError(progressId, err.message);
+        }
+    }
+
+    // Were there any successful sheets?
+    const successes = results.filter(r => !r.error);
+
+    if (!successes.length) {
+        showStatus('error', 'All files failed to parse. Check that you are uploading Softech sellout .htm reports.');
+        return;
+    }
+
+    // Serialise workbook
+    try {
+        loadingTitle.textContent = 'Building Excel workbook…';
+        loadingSub.textContent   = 'Finalising formatting and writing file';
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        generatedBlob = new Blob([buffer], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        });
+
+        // Suggest filename based on first file stem + date
+        const stem   = stemName(queuedFiles[0].name).replace(/[^\w\-]/g, '_');
+        const today  = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        outputName   = `${stem}_extracted_${today}.xlsx`;
+
+        const partials = results.filter(r => r.error).length;
+        successMeta.textContent =
+            `${successes.length} sheet${successes.length > 1 ? 's' : ''} · ` +
+            `${totalRows} rows extracted` +
+            (partials ? ` · ⚠ ${partials} file${partials > 1 ? 's' : ''} had errors` : '');
+
+        showStatus('success');
+        renderPreview(results);
+
+    } catch (err) {
+        showStatus('error', 'Failed to serialise the Excel workbook: ' + err.message);
+    }
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   PROGRESS UI HELPERS
+───────────────────────────────────────────────────────── */
+function appendProgressRow(container, id, fileName, sheetName, idx) {
+    const badgeClass = `sheet-badge-${idx % 8}`;
+    const div = document.createElement('div');
+    div.id        = id;
+    div.className = 'flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded-lg text-sm';
+    div.innerHTML = `
+        <svg class="animate-spin h-4 w-4 text-blue-500 shrink-0" xmlns="http://www.w3.org/2000/svg"
+             fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+        </svg>
+        <div class="flex-1 min-w-0">
+            <p class="font-medium text-slate-700 truncate">${escHtml(fileName)}</p>
+            <p class="text-xs text-slate-400">→ sheet: <span class="font-semibold ${badgeClass} px-1.5 rounded">${escHtml(sheetName)}</span></p>
+        </div>
+        <span class="text-xs text-slate-400 shrink-0" id="${id}-label">Parsing…</span>`;
+    container.appendChild(div);
+}
+
+function setProgressDone(id, rowCount) {
+    const el    = document.getElementById(id);
+    const label = document.getElementById(`${id}-label`);
+    if (!el) return;
+    el.querySelector('svg').outerHTML =
+        `<svg class="h-4 w-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>`;
+    // Re-inject because outerHTML replaces the node reference
+    el.querySelector('div.flex-1').insertAdjacentHTML(
+        'afterbegin',
+        `<svg class="h-4 w-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" style="display:none">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>`
+    );
+    // Just update the first child svg
+    const spinner = el.querySelector('svg.animate-spin');
+    if (spinner) {
+        spinner.outerHTML = `<svg class="h-4 w-4 text-emerald-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>`;
+    }
+    if (label) label.textContent = `${rowCount} rows ✓`;
+    el.classList.remove('border-slate-200');
+    el.classList.add('border-emerald-200', 'bg-emerald-50/40');
+}
+
+function setProgressError(id, msg) {
+    const el    = document.getElementById(id);
+    const label = document.getElementById(`${id}-label`);
+    if (!el) return;
+    const spinner = el.querySelector('svg.animate-spin');
+    if (spinner) {
+        spinner.outerHTML = `<svg class="h-4 w-4 text-rose-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>`;
+    }
+    if (label) label.textContent = 'Error';
+    el.classList.remove('border-slate-200');
+    el.classList.add('border-rose-200', 'bg-rose-50/40');
+
+    // Append error message inline
+    const errP = document.createElement('p');
+    errP.className = 'text-xs text-rose-600 mt-1 col-span-full';
+    errP.textContent = msg;
+    el.querySelector('div.flex-1').appendChild(errP);
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   HTM PARSING — CORE EXTRACTION LOGIC
+
+   Softech sellout data row anatomy (all columns span via colspan):
+     TD [style*=visibility:hidden]  → item code
+     TD [colspan=2] (1st)           → profit amount  (SKIP)
+     TD [colspan=2] (2nd)           → sell-out total ✓
+     TD [colspan=3] (1st)           → quantity       ✓
+     TD [colspan=3] (2nd)           → supplier name  (SKIP)
+     TD [colspan=7]                 → item name      ✓
+
+   Data rows are identified by the presence of a hidden TD.
+   All other rows (headers, metadata, totals footer) are ignored.
+───────────────────────────────────────────────────────── */
+function parseHtmReport(htmlText) {
+    const parser = new DOMParser();
+    const doc    = parser.parseFromString(htmlText, 'text/html');
+
+    const table = doc.querySelector('table, TABLE');
+    if (!table) throw new Error('No HTML table found in this file.');
+
+    const rows    = Array.from(table.querySelectorAll('tr, TR'));
+    const records = [];
+
+    rows.forEach(row => {
+        // Data rows have exactly one TD with visibility:hidden style
+        const hiddenTd = row.querySelector('td[style*="visibility:hidden"], TD[Style*="visibility:hidden"]');
+        if (!hiddenTd) return; // skip non-data rows
+
+        const code = hiddenTd.textContent.trim();
+
+        // Collect all TDs (excluding the hidden one) — preserve DOM order
+        const tds = Array.from(row.querySelectorAll('td, TD'))
+                         .filter(td => td !== hiddenTd);
+
+        // Gather cells by colspan attribute
+        const span2 = tds.filter(td => (td.getAttribute('colspan') || td.getAttribute('COLSPAN')) === '2');
+        const span3 = tds.filter(td => (td.getAttribute('colspan') || td.getAttribute('COLSPAN')) === '3');
+        const span7 = tds.filter(td => (td.getAttribute('colspan') || td.getAttribute('COLSPAN')) === '7');
+
+        // slot [1] in span2 = total; slot [0] in span3 = qty; slot [0] in span7 = item name
+        const totalStr = span2.length >= 2 ? span2[1].textContent.trim() : '';
+        const qtyStr   = span3.length >= 1 ? span3[0].textContent.trim() : '';
+        const item     = span7.length >= 1 ? span7[0].textContent.trim() : '';
+
+        // Convert Arabic-comma number strings → JS numbers
+        const quantity = parseArabicNumber(qtyStr);
+        const total    = parseArabicNumber(totalStr);
+
+        if (item) {
+            records.push({ code, item, quantity, total });
+        }
+    });
+
+    return records;
+}
+
+/** Parse number strings that may contain commas: "1,500.00" → 1500 */
+function parseArabicNumber(str) {
+    if (!str) return 0;
+    const cleaned = str.replace(/,/g, '').trim();
+    const n = parseFloat(cleaned);
+    return isNaN(n) ? 0 : n;
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   EXCEL WORKSHEET BUILDER
+───────────────────────────────────────────────────────── */
+async function buildWorksheet(workbook, sheetName, rows) {
+
+    const ws = workbook.addWorksheet(sheetName);
+
+    // ── Styles
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D9488' } }; // teal-600
+    const totalFill  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } }; // slate-100
+    const whiteFont  = { name: 'Segoe UI', size: 11, bold: true,  color: { argb: 'FFFFFFFF' } };
+    const bodyFont   = { name: 'Segoe UI', size: 11, bold: false, color: { argb: 'FF1E293B' } };
+    const boldFont   = { name: 'Segoe UI', size: 11, bold: true,  color: { argb: 'FF0F172A' } };
+    const thinBorder = {
+        top:    { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left:   { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right:  { style: 'thin', color: { argb: 'FFE2E8F0' } },
+    };
+    const totalBorder = {
+        top:    { style: 'thin',   color: { argb: 'FF94A3B8' } },
+        bottom: { style: 'double', color: { argb: 'FF1E293B' } },
+        left:   { style: 'thin',   color: { argb: 'FFE2E8F0' } },
+        right:  { style: 'thin',   color: { argb: 'FFE2E8F0' } },
+    };
+    const numFmt   = '#,##0.00';
+    const codeNumFmt = '0';   // codes are integers, no decimals
+
+    // ── Set column widths
+    ws.getColumn(1).width = 12;  // code
+    ws.getColumn(2).width = 52;  // item
+    ws.getColumn(3).width = 14;  // quantity
+    ws.getColumn(4).width = 14;  // total
+
+    // ── Header row
+    const headerRow = ws.addRow(['code', 'item', 'quantity', 'total']);
+    headerRow.height = 28;
+    headerRow.eachCell(cell => {
+        cell.fill      = headerFill;
+        cell.font      = whiteFont;
+        cell.border    = thinBorder;
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+
+    // ── Data rows
+    let qtySum   = 0;
+    let totalSum = 0;
+
+    rows.forEach(r => {
+        const dataRow = ws.addRow([r.code, r.item, r.quantity, r.total]);
+        dataRow.height = 22;
+
+        dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }; // code
+        dataRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'left'   }; // item name
+        dataRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right'  }; // qty
+        dataRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right'  }; // total
+
+        dataRow.getCell(3).numFmt = numFmt;
+        dataRow.getCell(4).numFmt = numFmt;
+
+        dataRow.eachCell(cell => {
+            cell.font   = bodyFont;
+            cell.border = thinBorder;
+        });
+
+        qtySum   += r.quantity;
+        totalSum += r.total;
+    });
+
+    // ── Totals footer
+    const lastDataRow = 1 + rows.length + 1; // header=1, data rows, then totals
+    const totalRow    = ws.addRow(['', 'TOTAL', qtySum, totalSum]);
+    totalRow.height   = 26;
+
+    totalRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+    totalRow.getCell(3).alignment = { vertical: 'middle', horizontal: 'right'  };
+    totalRow.getCell(4).alignment = { vertical: 'middle', horizontal: 'right'  };
+    totalRow.getCell(3).numFmt = numFmt;
+    totalRow.getCell(4).numFmt = numFmt;
+
+    totalRow.eachCell(cell => {
+        cell.fill   = totalFill;
+        cell.font   = boldFont;
+        cell.border = totalBorder;
+    });
+
+    // Freeze header row
+    ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 1, activeCell: 'A2' }];
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   PREVIEW PANEL
+───────────────────────────────────────────────────────── */
+function renderPreview(results) {
+    previewCards.innerHTML = '';
+    let grandTotal = 0;
+    let grandQty   = 0;
+
+    results.forEach((r, idx) => {
+        const badgeClass = `sheet-badge-${idx % 8}`;
+        const card = document.createElement('div');
+        card.className = 'border border-slate-200 rounded-xl overflow-hidden';
+
+        if (r.error) {
+            card.innerHTML = `
+                <div class="flex items-center gap-2 px-4 py-3 bg-rose-50 border-b border-rose-200">
+                    <span class="text-rose-500 font-bold">✗</span>
+                    <span class="font-semibold text-sm text-slate-700">${escHtml(r.name)}</span>
+                    <span class="text-xs text-rose-600 ml-auto">${escHtml(r.error)}</span>
+                </div>`;
+        } else {
+            const rowQty   = r.rows.reduce((s, x) => s + x.quantity, 0);
+            const rowTotal = r.rows.reduce((s, x) => s + x.total,    0);
+            grandQty   += rowQty;
+            grandTotal += rowTotal;
+
+            // Preview: first 5 rows
+            const previewRows = r.rows.slice(0, 5);
+            const moreCount   = r.rows.length - previewRows.length;
+
+            card.innerHTML = `
+                <div class="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200">
+                    <span class="text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}">
+                        Sheet ${idx + 1}
+                    </span>
+                    <span class="font-semibold text-sm text-slate-700 truncate">${escHtml(r.sheetName)}</span>
+                    <span class="text-xs text-slate-400 ml-auto shrink-0">${r.rows.length} rows</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wide">
+                                <th class="px-3 py-2 text-left font-semibold">Code</th>
+                                <th class="px-3 py-2 text-left font-semibold">Item</th>
+                                <th class="px-3 py-2 text-right font-semibold">Qty</th>
+                                <th class="px-3 py-2 text-right font-semibold">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${previewRows.map(row => `
+                            <tr class="border-t border-slate-100 hover:bg-slate-50">
+                                <td class="px-3 py-2 text-slate-500 font-mono">${escHtml(String(row.code))}</td>
+                                <td class="px-3 py-2 text-slate-700 max-w-xs truncate">${escHtml(row.item)}</td>
+                                <td class="px-3 py-2 text-right tabular-nums">${row.quantity.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:3})}</td>
+                                <td class="px-3 py-2 text-right tabular-nums font-medium">${row.total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                            </tr>`).join('')}
+                            ${moreCount > 0 ? `
+                            <tr class="border-t border-slate-100 bg-slate-50">
+                                <td colspan="4" class="px-3 py-2 text-center text-slate-400 italic">
+                                    … and ${moreCount} more row${moreCount > 1 ? 's' : ''} (all included in Excel)
+                                </td>
+                            </tr>` : ''}
+                        </tbody>
+                        <tfoot>
+                            <tr class="border-t-2 border-slate-300 bg-slate-50 font-bold">
+                                <td class="px-3 py-2" colspan="2">TOTAL</td>
+                                <td class="px-3 py-2 text-right tabular-nums">
+                                    ${rowQty.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:3})}
+                                </td>
+                                <td class="px-3 py-2 text-right tabular-nums">
+                                    ${rowTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>`;
+        }
+        previewCards.appendChild(card);
+    });
+
+    previewTotalLb.textContent =
+        `Grand total: ${grandTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} · Qty: ${grandQty.toLocaleString(undefined,{minimumFractionDigits:3,maximumFractionDigits:3})}`;
+
+    previewSec.classList.remove('hidden');
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   STATUS HELPERS
+───────────────────────────────────────────────────────── */
+function showStatus(state, msg = '') {
+    statusCont.classList.remove('hidden');
+    statusLoading.classList.add('hidden');   statusLoading.classList.remove('flex');
+    statusSuccess.classList.add('hidden');   statusSuccess.classList.remove('flex');
+    statusError.classList.add('hidden');     statusError.classList.remove('flex');
+
+    if (state === 'success') {
+        statusLoading.classList.add('hidden');
+        statusSuccess.classList.remove('hidden');
+        statusSuccess.classList.add('flex');
+    } else if (state === 'error') {
+        statusLoading.classList.add('hidden');
+        statusError.classList.remove('hidden');
+        statusError.classList.add('flex');
+        errorMessage.textContent = msg;
+    }
+}
+
+function showToast(msg) {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.className   = 'fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs ' +
+                    'font-medium px-4 py-2 rounded-full shadow-lg z-50 opacity-0 transition-opacity duration-300';
+    document.body.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = '1'; });
+    setTimeout(() => {
+        t.style.opacity = '0';
+        setTimeout(() => t.remove(), 300);
+    }, 3000);
+}
+
+
+/* ─────────────────────────────────────────────────────────
+   UTILITY FUNCTIONS
+───────────────────────────────────────────────────────── */
+
+/** Read a File object as UTF-8 text, falling back to Windows-1256 for Arabic. */
+function readFileAsText(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = e => resolve(e.target.result);
+        reader.onerror = ()  => reject(new Error('Could not read file: ' + file.name));
+        // UTF-8 with BOM strip; Arabic Softech files may use Windows-1256 but
+        // modern exports are UTF-8. If garbled, user should resave as UTF-8.
+        reader.readAsText(file, 'UTF-8');
+    });
+}
+
+/** Strip file extension from a filename. */
+function stemName(filename) {
+    return filename.replace(/\.[^.]+$/, '');
+}
+
+/**
+ * Sanitise a string to be a valid Excel sheet name:
+ * – max 31 characters
+ * – no \ / * ? : [ ]
+ * – must be unique (append index suffix if needed)
+ */
+const usedSheetNames = new Set();
+function sanitiseSheetName(raw, idx) {
+    usedSheetNames.clear(); // reset each extraction run (called inside loop)
+    let name = raw.replace(/[\\\/\*\?\:\[\]]/g, '_').slice(0, 31).trim();
+    if (!name) name = `Sheet${idx + 1}`;
+    if (usedSheetNames.has(name)) name = (name.slice(0, 28) + `_${idx}`).slice(0, 31);
+    usedSheetNames.add(name);
+    return name;
+}
+
+/** Escape HTML entities to prevent XSS when injecting into innerHTML. */
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/* ─────────────────────────────────────────────────────────
+   INIT — reset sheet name tracker on each run
+───────────────────────────────────────────────────────── */
+processBtn.addEventListener('click', () => { usedSheetNames.clear(); });
+
+</script>
+</body>
+</html>
