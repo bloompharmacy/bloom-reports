@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sellout Report Converter — Softech ERP → Excel</title>
+
+    <!--
+      PERFORMANCE NOTES (read me)
+      ─────────────────────────────────────────────────────────────
+      1. Heavy work (file read → HTM parse → ExcelJS build → xlsx serialise)
+         runs inside an inline Web Worker (see <script id="worker-src">).
+         The main thread only touches the DOM, so the UI never freezes.
+
+      2. DOMParser is NOT available in workers (there is no DOM there), so
+         parsing is now done with a streaming regex scan over the raw text.
+         This is both worker-safe AND far lighter on memory than loading the
+         whole document into a DOM tree.
+
+      3. ExcelJS styling is applied once at the COLUMN level (ws.columns[].style)
+         before rows are added, so data rows inherit styling for free — no
+         per-cell loop over thousands of rows. Only the header & total rows
+         get a tiny per-cell override.
+
+      4. Tailwind's in-browser JIT compiler (@tailwindcss/browser) has been
+         removed. All styling is now plain hand-written CSS below, so the
+         browser does zero CSS computation on the fly. (See "Production build"
+         note at the very bottom if you'd rather keep Tailwind via the CLI.)
+
+      Only FileSaver stays on the main thread (it triggers the download).
+      ExcelJS is loaded *inside* the worker via importScripts.
+    -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+    <style>
+    /* ════════════════════════════════════════════════════════
+       DESIGN TOKENS
+    ═════════════════════════════════════════════════════════ */
+    :root {
+        --teal-50:#f0fdfa; --teal-100:#ccfbf1; --teal-200:#99f6e4;
+        --teal-600:#0d9488; --teal-700:#0f766e;
+        --slate-50:#f8fafc; --slate-100:#f1f5f9; --slate-200:#e2e8f0;
+        --slate-300:#cbd5e1; --slate-400:#94a3b8; --slate-500:#64748b;
+        --slate-600:#475569; --slate-700:#334155; --slate-800:#1e293b; --slate-900:#0f172a;
+        --blue-50:#eff6ff; --blue-100:#dbeafe; --blue-200:#bfdbfe;
+        --blue-500:#3b82f6; --blue-600:#2563eb; --blue-700:#1d4ed8; --blue-800:#1e40af;
+        --emerald-50:#ecfdf5; --emerald-200:#a7f3d0; --emerald-500:#10b981;
+        --emerald-600:#059669; --emerald-700:#047857; --emerald-800:#065f46;
+        --rose-50:#fff1f2; --rose-200:#fecdd3; --rose-500:#f43f5e;
+        --rose-600:#e11d48; --rose-700:#be123c; --rose-800:#9f1239;
+        --radius:0.75rem;
+        --shadow-sm:0 1px 2px rgba(0,0,0,.05);
+        --shadow-md:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1);
+        --shadow-xl:0 20px 25px -5px rgba(0,0,0,.1),0 8px 10px -6px rgba(0,0,0,.1);
+    }
+
+    *,*::before,*::after { box-sizing:border-box; }
+    html,body { margin:0; padding:0; }
+    body {
+        font-family:'Segoe UI',system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+        background:var(--slate-50); color:var(--slate-800);
+        min-height:100vh; display:flex; flex-direction:column;
+        line-height:1.5; -webkit-font-smoothing:antialiased;
+    }
+    h1,h2,h3,p,ol { margin:0; }
+    button { font-family:inherit; cursor:pointer; border:none; background:none; }
+    code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    .hidden { display:none !important; }
+    svg { display:block; }
+
+    /* ── Header ── */
+    .site-header {
+        background:#fff; border-bottom:1px solid var(--slate-200);
+        padding:1.25rem 2rem; box-shadow:var(--shadow-sm);
+    }
+    .header-inner {
+        max-width:64rem; margin:0 auto;
+        display:flex; justify-content:space-between; align-items:center; gap:1rem;
+    }
+    .brand { display:flex; align-items:center; gap:.75rem; }
+    .brand-icon {
+        background:var(--teal-600); color:#fff; padding:.625rem;
+        border-radius:.75rem; box-shadow:var(--shadow-md);
+    }
+    .brand-icon svg { width:1.5rem; height:1.5rem; }
+    .brand h1 { font-size:1.25rem; font-weight:700; color:var(--slate-900); }
+    .brand p { font-size:.75rem; color:var(--slate-400); margin-top:.125rem; }
+    .privacy-pill {
+        font-size:.75rem; font-weight:600; padding:.25rem .75rem;
+        background:var(--teal-50); color:var(--teal-700);
+        border:1px solid var(--teal-200); border-radius:9999px; white-space:nowrap;
+    }
+
+    /* ── Layout ── */
+    main { max-width:48rem; width:100%; margin:0 auto; padding:1.5rem;
+           flex:1; display:flex; flex-direction:column; gap:1.5rem; }
+
+    /* ── Info banner ── */
+    .banner {
+        background:var(--blue-50); border:1px solid var(--blue-200);
+        border-radius:var(--radius); padding:1rem 1.25rem;
+        display:flex; gap:.75rem; align-items:flex-start;
+        font-size:.875rem; color:var(--blue-800);
+    }
+    .banner svg { width:1.25rem; height:1.25rem; margin-top:.125rem; flex-shrink:0; color:var(--blue-500); }
+    .banner .title { font-weight:600; margin-bottom:.25rem; }
+    .banner ol { list-style:decimal inside; font-size:.75rem; color:var(--blue-700); display:flex; flex-direction:column; gap:.125rem; }
+    .banner code { background:var(--blue-100); padding:0 .25rem; border-radius:.25rem; }
+
+    /* ── Card ── */
+    .card {
+        background:#fff; border-radius:1rem; box-shadow:var(--shadow-xl);
+        border:1px solid var(--slate-100); padding:2rem;
+    }
+
+    /* ── Drop zone ── */
+    #drop-zone {
+        border:2px dashed var(--slate-300); border-radius:var(--radius);
+        padding:2.5rem; display:flex; flex-direction:column;
+        align-items:center; justify-content:center; cursor:pointer;
+        transition:border-color .2s,background-color .2s; text-align:center;
+    }
+    #drop-zone.drag-active { border-color:var(--teal-600); background:rgba(13,148,136,.05); }
+    .dz-icon {
+        background:#fff; padding:1rem; border-radius:9999px; box-shadow:var(--shadow-md);
+        margin-bottom:1rem; color:var(--slate-400); transition:transform .2s,color .2s;
+    }
+    #drop-zone:hover .dz-icon { transform:scale(1.1); color:var(--teal-600); }
+    .dz-icon svg { width:2.5rem; height:2.5rem; }
+    .dz-title { font-size:1rem; font-weight:600; color:var(--slate-700); margin-bottom:.25rem; }
+    .dz-sub { font-size:.75rem; color:var(--slate-400); margin-bottom:1rem; }
+    .dz-browse {
+        font-size:.75rem; padding:.375rem 1rem; background:#fff;
+        border:1px solid var(--slate-200); color:var(--slate-600);
+        border-radius:.5rem; box-shadow:var(--shadow-sm); font-weight:500;
+        transition:background .15s,color .15s,border-color .15s;
+    }
+    #drop-zone:hover .dz-browse { background:var(--teal-600); color:#fff; border-color:var(--teal-600); }
+
+    /* ── Section headings ── */
+    .section-label { font-size:.75rem; font-weight:600; color:var(--slate-500);
+                     text-transform:uppercase; letter-spacing:.05em; }
+
+    /* ── File list ── */
+    #file-list { margin-top:1.25rem; }
+    .file-list-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:.5rem; }
+    #clear-btn { font-size:.75rem; color:var(--rose-500); font-weight:500; transition:color .15s; }
+    #clear-btn:hover { color:var(--rose-700); }
+    #file-chips { display:flex; flex-direction:column; gap:.5rem; }
+
+    @keyframes fadeSlideIn { from{opacity:0;transform:translateY(6px);} to{opacity:1;transform:translateY(0);} }
+    .file-chip {
+        animation:fadeSlideIn .2s ease both;
+        display:flex; align-items:center; justify-content:space-between; gap:.75rem;
+        padding:.625rem .75rem; background:var(--slate-50);
+        border:1px solid var(--slate-200); border-radius:.5rem; font-size:.875rem;
+    }
+    .chip-left { display:flex; align-items:center; gap:.5rem; min-width:0; }
+    .chip-emoji { font-size:1.125rem; }
+    .chip-name { font-weight:500; color:var(--slate-700); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .chip-size { font-size:.75rem; color:var(--slate-400); }
+    .chip-right { display:flex; align-items:center; gap:.5rem; flex-shrink:0; }
+    .chip-remove { color:var(--slate-300); font-size:1.125rem; line-height:1; transition:color .15s; }
+    .chip-remove:hover { color:var(--rose-500); }
+
+    /* ── Sheet badges (cycle 8 tones) ── */
+    .sheet-badge { font-size:.75rem; font-weight:600; padding:.125rem .5rem; border-radius:9999px; }
+    .badge-inline { padding:0 .375rem; border-radius:.25rem; font-weight:600; }
+    .sheet-badge-0{background:#dbeafe;color:#1e40af;} .sheet-badge-1{background:#dcfce7;color:#166534;}
+    .sheet-badge-2{background:#fef9c3;color:#854d0e;} .sheet-badge-3{background:#fce7f3;color:#9d174d;}
+    .sheet-badge-4{background:#ede9fe;color:#4c1d95;} .sheet-badge-5{background:#ffedd5;color:#9a3412;}
+    .sheet-badge-6{background:#cffafe;color:#155e75;} .sheet-badge-7{background:#f1f5f9;color:#334155;}
+
+    /* ── Buttons ── */
+    #process-section { margin-top:1.25rem; }
+    .btn-primary {
+        width:100%; padding:.75rem; border-radius:var(--radius);
+        background:var(--teal-600); color:#fff; font-weight:600; font-size:.875rem;
+        box-shadow:var(--shadow-md); transition:background .15s;
+        display:flex; align-items:center; justify-content:center; gap:.5rem;
+    }
+    .btn-primary:hover { background:var(--teal-700); }
+    .btn-primary svg { width:1rem; height:1rem; }
+    .btn-count { background:rgba(255,255,255,.2); color:#fff; font-size:.75rem;
+                 font-weight:700; padding:.125rem .5rem; border-radius:9999px; margin-left:.25rem; }
+    .btn-download {
+        font-size:.75rem; font-weight:700; padding:.5rem 1rem;
+        background:var(--emerald-600); color:#fff; border-radius:.5rem;
+        box-shadow:var(--shadow-md); transition:background .15s;
+        display:flex; align-items:center; gap:.375rem; flex-shrink:0;
+    }
+    .btn-download:hover { background:var(--emerald-700); }
+    .btn-download svg { width:1rem; height:1rem; }
+
+    /* ── Status area ── */
+    #status-container { margin-top:1.25rem; display:flex; flex-direction:column; gap:.75rem; }
+    .status-box { padding:1rem; border-radius:var(--radius); }
+    #status-loading { display:flex; align-items:center; gap:.75rem;
+                      background:var(--blue-50); border:1px solid var(--blue-200); color:var(--blue-700); }
+    #status-loading .title { font-size:.875rem; font-weight:600; }
+    #status-loading .sub { font-size:.75rem; color:var(--blue-500); margin-top:.125rem; }
+    #status-success { display:flex; align-items:center; justify-content:space-between;
+                      background:var(--emerald-50); border:1px solid var(--emerald-200); color:var(--emerald-800); }
+    #status-success .ok-left { display:flex; align-items:center; gap:.75rem; }
+    #status-success .ok-title { font-size:.875rem; font-weight:700; }
+    #status-success .ok-meta { font-size:.75rem; color:var(--emerald-600); margin-top:.125rem; }
+    #status-error { display:flex; align-items:flex-start; gap:.75rem;
+                    background:var(--rose-50); border:1px solid var(--rose-200); color:var(--rose-800); }
+    #status-error .err-title { font-size:.875rem; font-weight:700; }
+    #status-error .err-msg { font-size:.75rem; color:var(--rose-600); margin-top:.25rem; line-height:1.6; }
+    .status-icon { width:1.5rem; height:1.5rem; flex-shrink:0; }
+    .icon-emerald { color:var(--emerald-600); }
+    .icon-rose { color:var(--rose-600); margin-top:.125rem; }
+
+    /* ── Spinner ── */
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .spinner { animation:spin 1s linear infinite; }
+    .spin-lg { width:1.25rem; height:1.25rem; color:var(--blue-600); flex-shrink:0; }
+    .spin-sm { width:1rem; height:1rem; color:var(--blue-500); flex-shrink:0; }
+    .op-25 { opacity:.25; } .op-75 { opacity:.75; }
+
+    /* ── Progress list ── */
+    #progress-list { display:flex; flex-direction:column; gap:.5rem; }
+    .progress-row {
+        display:flex; align-items:center; gap:.75rem; padding:.75rem;
+        background:var(--slate-50); border:1px solid var(--slate-200);
+        border-radius:.5rem; font-size:.875rem;
+    }
+    .progress-row.done { border-color:var(--emerald-200); background:rgba(236,253,245,.5); }
+    .progress-row.failed { border-color:var(--rose-200); background:rgba(255,241,242,.5); }
+    .pr-body { flex:1; min-width:0; }
+    .pr-name { font-weight:500; color:var(--slate-700); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pr-sheet { font-size:.75rem; color:var(--slate-400); }
+    .pr-label { font-size:.75rem; color:var(--slate-400); flex-shrink:0; }
+    .pr-error { font-size:.75rem; color:var(--rose-600); margin-top:.25rem; }
+    .icon-check { width:1rem; height:1rem; color:var(--emerald-500); flex-shrink:0; }
+    .icon-x { width:1rem; height:1rem; color:var(--rose-500); flex-shrink:0; }
+
+    /* ── Preview ── */
+    #preview-section { margin-top:1.5rem; }
+    .preview-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:.75rem; }
+    #preview-total-label { font-size:.75rem; color:var(--slate-400); }
+    #preview-cards { display:flex; flex-direction:column; gap:1rem; }
+    .preview-card { border:1px solid var(--slate-200); border-radius:var(--radius); overflow:hidden; }
+    .pc-head { display:flex; align-items:center; gap:.5rem; padding:.75rem 1rem;
+               background:var(--slate-50); border-bottom:1px solid var(--slate-200); }
+    .pc-head.error { background:var(--rose-50); border-bottom-color:var(--rose-200); }
+    .pc-title { font-weight:600; font-size:.875rem; color:var(--slate-700);
+                white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .pc-meta { font-size:.75rem; color:var(--slate-400); margin-left:auto; flex-shrink:0; }
+    .pc-err { font-size:.75rem; color:var(--rose-600); margin-left:auto; }
+    .pc-table-wrap { overflow-x:auto; }
+    table.preview { width:100%; border-collapse:collapse; font-size:.75rem; }
+    table.preview thead tr { background:var(--slate-50); color:var(--slate-500);
+        text-transform:uppercase; font-size:.625rem; letter-spacing:.05em; }
+    table.preview th { padding:.5rem .75rem; font-weight:600; }
+    table.preview td { padding:.5rem .75rem; }
+    .ta-left { text-align:left; } .ta-right { text-align:right; }
+    table.preview tbody tr { border-top:1px solid var(--slate-100); }
+    table.preview tbody tr:hover { background:var(--slate-50); }
+    .cell-code { color:var(--slate-500); font-family:ui-monospace,Consolas,monospace; }
+    .cell-item { color:var(--slate-700); max-width:20rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cell-num { text-align:right; font-variant-numeric:tabular-nums; }
+    .cell-num.strong { font-weight:500; }
+    .more-row td { text-align:center; color:var(--slate-400); font-style:italic; background:var(--slate-50); }
+    table.preview tfoot tr { border-top:2px solid var(--slate-300); background:var(--slate-50); font-weight:700; }
+
+    /* ── Footer ── */
+    .site-footer { background:#fff; border-top:1px solid var(--slate-200);
+        padding:1rem 2rem; text-align:center; font-size:.75rem; color:var(--slate-400); }
+
+    /* ── Toast ── */
+    .toast {
+        position:fixed; bottom:1.5rem; left:50%; transform:translateX(-50%);
+        background:var(--slate-800); color:#fff; font-size:.75rem; font-weight:500;
+        padding:.5rem 1rem; border-radius:9999px; box-shadow:var(--shadow-md);
+        z-index:50; opacity:0; transition:opacity .3s;
+    }
+    </style>
+</head>
+
+<body>
+
+<!-- ════════════ HEADER ════════════ -->
+<header class="site-header">
+    <div class="header-inner">
+        <div class="brand">
+            <div class="brand-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+            </div>
+            <div class="brand">
+                <div>
+                    <h1>Sellout Report Converter</h1>
+                    <p>Softech ERP .htm exports → structured Excel workbook</p>
+                </div>
+            </div>
+        </div>
+        <span class="privacy-pill">100% browser-local · no data sent anywhere</span>
+    </div>
+</header>
+
+
+<!-- ════════════ MAIN ════════════ -->
+<main>
+
+    <!-- HOW IT WORKS -->
+    <div class="banner">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 110 20A10 10 0 0112 2z"/>
+        </svg>
+        <div>
+            <p class="title">How to use</p>
+            <ol>
+                <li>Drop one or more Softech sellout <strong>.htm</strong> files onto the zone below.</li>
+                <li>Each file becomes a separate sheet named after the file.</li>
+                <li>Columns extracted: <code>code · item · quantity · total</code></li>
+                <li>Click <strong>Download Excel</strong> to get a single workbook with all sheets.</li>
+            </ol>
+        </div>
+    </div>
+
+    <!-- CARD -->
+    <div class="card">
+
+        <div id="drop-zone">
+            <input type="file" id="file-input" class="hidden" accept=".htm,.html" multiple>
+            <div class="dz-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                </svg>
+            </div>
+            <h3 class="dz-title">Drop Softech .htm files here</h3>
+            <p class="dz-sub">Supports multiple files — each becomes a separate Excel sheet</p>
+            <span class="dz-browse">Browse files</span>
+        </div>
+
+        <!-- FILE CHIPS -->
+        <div id="file-list" class="hidden">
+            <div class="file-list-head">
+                <p class="section-label">Files queued</p>
+                <button id="clear-btn">Clear all</button>
+            </div>
+            <div id="file-chips"></div>
+        </div>
+
+        <!-- PROCESS BUTTON -->
+        <div id="process-section" class="hidden">
+            <button id="process-btn" class="btn-primary"></button>
+        </div>
+
+        <!-- STATUS -->
+        <div id="status-container" class="hidden">
+
+            <div id="status-loading" class="status-box hidden">
+                <svg class="spinner spin-lg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="op-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="op-75" fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                </svg>
+                <div>
+                    <p class="title" id="loading-title">Processing files…</p>
+                    <p class="sub" id="loading-sub">Please wait</p>
+                </div>
+            </div>
+
+            <div id="progress-list" class="hidden"></div>
+
+            <div id="status-success" class="status-box hidden">
+                <div class="ok-left">
+                    <svg class="status-icon icon-emerald" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    <div>
+                        <p class="ok-title">Workbook ready!</p>
+                        <p class="ok-meta" id="success-meta">—</p>
+                    </div>
+                </div>
+                <button id="download-btn" class="btn-download">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                    </svg>
+                    Download Excel
+                </button>
+            </div>
+
+            <div id="status-error" class="status-box hidden">
+                <svg class="status-icon icon-rose" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                </svg>
+                <div>
+                    <p class="err-title">Processing failed</p>
+                    <p class="err-msg" id="error-message">—</p>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- PREVIEW -->
+        <div id="preview-section" class="hidden">
+            <div class="preview-head">
+                <p class="section-label">Extracted sheets</p>
+                <span id="preview-total-label"></span>
+            </div>
+            <div id="preview-cards"></div>
+        </div>
+
+    </div>
+</main>
+
+
+<!-- ════════════ FOOTER ════════════ -->
+<footer class="site-footer">
+    All processing happens locally inside your browser. No data is uploaded or shared externally.
+</footer>
+
+
+<!-- ════════════════════════════════════════════════════════
+     WEB WORKER SOURCE
+     This block is NOT executed by the browser (unknown type).
+     It is read as text, turned into a Blob, and run as a Worker.
+     Keeping it in a <script> tag avoids template-literal escaping.
+═════════════════════════════════════════════════════════ -->
+<script id="worker-src" type="text/js-worker">
+/* eslint-disable no-restricted-globals */
+importScripts('https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js');
+
+/* ── Number parsing (commas, Arabic-Indic digits & separators) ── */
+function normaliseDigits(s) {
+    return s
+        .replace(/[٠-٩]/g, d => String(d.charCodeAt(0) - 0x0660))  // Arabic-Indic
+        .replace(/[۰-۹]/g, d => String(d.charCodeAt(0) - 0x06F0)); // Eastern Arabic-Indic
+}
+function parseArabicNumber(str) {
+    if (!str) return 0;
+    let s = normaliseDigits(str)
+        .replace(/[٬,]/g, '')   // thousands separators
+        .replace(/[٫]/g, '.')   // Arabic decimal separator
+        .trim();
+    const n = parseFloat(s);
+    return isNaN(n) ? 0 : n;
+}
+
+/* ── Strip tags + decode entities from a TD inner HTML ── */
+function cellText(html) {
+    return html
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/&#(\d+);/g, (m, n) => String.fromCharCode(parseInt(n, 10)))
+        .replace(/&#x([0-9a-f]+);/gi, (m, n) => String.fromCharCode(parseInt(n, 16)))
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/* ── Streaming regex parser (worker-safe replacement for DOMParser) ──
+   Softech sellout data row anatomy (colspan-based):
+     TD style=visibility:hidden → code
+     TD colspan=2 (1st)         → profit  (SKIP)
+     TD colspan=2 (2nd)         → total   ✓
+     TD colspan=3 (1st)         → quantity ✓
+     TD colspan=3 (2nd)         → supplier (SKIP)
+     TD colspan=7               → item     ✓
+   Data rows are identified by a hidden TD; everything else is ignored.
+   We never build a DOM — we scan <tr>…</tr> then <td>…</td> with regex,
+   which keeps peak memory close to the raw string size.
+*/
+function parseHtmReport(html) {
+    const records = [];
+    const trRe = /<tr\b[^>]*>([\s\S]*?)<\/tr>/gi;
+    let trMatch;
+    let sawTable = false;
+
+    while ((trMatch = trRe.exec(html)) !== null) {
+        const rowHtml = trMatch[1];
+
+        // Collect cells: { attrs, text }
+        const cells = [];
+        const tdRe = /<td\b([^>]*)>([\s\S]*?)<\/td>/gi;
+        let tdMatch;
+        while ((tdMatch = tdRe.exec(rowHtml)) !== null) {
+            cells.push({ attrs: tdMatch[1], text: cellText(tdMatch[2]) });
+        }
+        if (cells.length === 0) continue;
+        sawTable = true;
+
+        // Find hidden TD (the code marker)
+        const hiddenIdx = cells.findIndex(c => /visibility\s*:\s*hidden/i.test(c.attrs));
+        if (hiddenIdx === -1) continue;
+
+        const code = cells[hiddenIdx].text;
+        const rest = cells.filter((_, i) => i !== hiddenIdx);
+
+        const colspanOf = a => {
+            const m = /colspan\s*=\s*["']?\s*(\d+)/i.exec(a);
+            return m ? m[1] : null;
+        };
+        const span2 = rest.filter(c => colspanOf(c.attrs) === '2');
+        const span3 = rest.filter(c => colspanOf(c.attrs) === '3');
+        const span7 = rest.filter(c => colspanOf(c.attrs) === '7');
+
+        const totalStr = span2.length >= 2 ? span2[1].text : '';
+        const qtyStr   = span3.length >= 1 ? span3[0].text : '';
+        const item     = span7.length >= 1 ? span7[0].text : '';
+
+        if (item) {
+            records.push({
+                code,
+                item,
+                quantity: parseArabicNumber(qtyStr),
+                total:    parseArabicNumber(totalStr),
+            });
+        }
+    }
+
+    if (!sawTable) throw new Error('No HTML table found in this file.');
+    return records;
+}
+
+/* ── Read a File → text, with UTF-8 then Windows-1256 fallback for Arabic ── */
+async function fileToText(file) {
+    const buf = await file.arrayBuffer();
+    let text = new TextDecoder('utf-8').decode(buf);
+    const bad = (text.match(/�/g) || []).length;
+    if (bad > 5) {
+        try { text = new TextDecoder('windows-1256').decode(buf); } catch (e) { /* keep utf-8 */ }
+    }
+    return text;
+}
+
+/* ── Sheet name sanitiser (unique, ≤31 chars, no illegal chars) ── */
+function stemName(filename) { return filename.replace(/\.[^.]+$/, ''); }
+function sanitiseSheetName(raw, idx, used) {
+    let name = raw.replace(/[\\\/\*\?\:\[\]]/g, '_').slice(0, 31).trim();
+    if (!name) name = 'Sheet' + (idx + 1);
+    let candidate = name, n = 1;
+    while (used.has(candidate)) {
+        candidate = (name.slice(0, 27) + '_' + (++n)).slice(0, 31);
+    }
+    used.add(candidate);
+    return candidate;
+}
+
+/* ── Worksheet builder — BULK styling at the column level ──
+   Styles are set on ws.columns[].style BEFORE rows are added, so every
+   data row inherits font/border/alignment/numFmt automatically. There is
+   NO per-cell loop over the data rows. Only the header and total rows get
+   a small per-cell override afterward.
+*/
+function buildWorksheet(workbook, sheetName, rows) {
+    const ws = workbook.addWorksheet(sheetName);
+
+    const thinBorder = {
+        top:    { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left:   { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right:  { style: 'thin', color: { argb: 'FFE2E8F0' } },
+    };
+    const bodyFont = { name: 'Segoe UI', size: 11, color: { argb: 'FF1E293B' } };
+    const numFmt   = '#,##0.00';
+
+    // Column-level styling — inherited by all cells created afterwards.
+    ws.columns = [
+        { key: 'code',     width: 12, style: { font: bodyFont, border: thinBorder, alignment: { vertical: 'middle', horizontal: 'center' }, numFmt: '0' } },
+        { key: 'item',     width: 52, style: { font: bodyFont, border: thinBorder, alignment: { vertical: 'middle', horizontal: 'left'   } } },
+        { key: 'quantity', width: 14, style: { font: bodyFont, border: thinBorder, alignment: { vertical: 'middle', horizontal: 'right'  }, numFmt: numFmt } },
+        { key: 'total',    width: 14, style: { font: bodyFont, border: thinBorder, alignment: { vertical: 'middle', horizontal: 'right'  }, numFmt: numFmt } },
+    ];
+
+    // Header
+    const headerRow = ws.addRow(['code', 'item', 'quantity', 'total']);
+    headerRow.height = 28;
+
+    // Data — fast path: just push values + sum. No styling work here.
+    let qtySum = 0, totalSum = 0;
+    for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const row = ws.addRow([r.code, r.item, r.quantity, r.total]);
+        row.height = 22;
+        qtySum   += r.quantity;
+        totalSum += r.total;
+    }
+
+    // Totals footer
+    const totalRow = ws.addRow(['', 'TOTAL', qtySum, totalSum]);
+    totalRow.height = 26;
+
+    // ── Small per-cell overrides (only 2 rows × 4 cells) ──
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D9488' } };
+    const whiteFont  = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    headerRow.eachCell(cell => {
+        cell.fill = headerFill;
+        cell.font = whiteFont;
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.border = thinBorder;
+    });
+
+    const totalFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    const boldFont  = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FF0F172A' } };
+    const totalBorder = {
+        top:    { style: 'thin',   color: { argb: 'FF94A3B8' } },
+        bottom: { style: 'double', color: { argb: 'FF1E293B' } },
+        left:   { style: 'thin',   color: { argb: 'FFE2E8F0' } },
+        right:  { style: 'thin',   color: { argb: 'FFE2E8F0' } },
+    };
+    totalRow.eachCell(cell => {
+        cell.fill = totalFill;
+        cell.font = boldFont;
+        cell.border = totalBorder;
+    });
+    totalRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' };
+
+    ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 1, activeCell: 'A2' }];
+}
+
+/* ── Worker entry point ── */
+self.onmessage = async (e) => {
+    const files = e.data.files;
+    try {
+        if (typeof ExcelJS === 'undefined') {
+            throw new Error('ExcelJS failed to load inside the worker (check your network/CDN).');
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const usedNames = new Set();
+        const previews = [];
+        let totalRows = 0, partials = 0, successCount = 0;
+
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            const sheetName = sanitiseSheetName(stemName(file.name), i, usedNames);
+            try {
+                const text = await fileToText(file);
+                const rows = parseHtmReport(text);
+                if (rows.length === 0) {
+                    throw new Error('No sellout data rows found. Confirm this is a Softech sellout report.');
+                }
+                buildWorksheet(workbook, sheetName, rows);
+
+                const qtySum   = rows.reduce((s, r) => s + r.quantity, 0);
+                const totalSum = rows.reduce((s, r) => s + r.total, 0);
+                totalRows += rows.length;
+                successCount++;
+
+                // Only the first 5 rows cross back to the main thread (memory-light preview).
+                previews.push({
+                    name: file.name, sheetName, error: null,
+                    rowCount: rows.length, qtySum, totalSum,
+                    preview: rows.slice(0, 5),
+                });
+                self.postMessage({ type: 'progress', index: i, ok: true, rowCount: rows.length, sheetName });
+            } catch (err) {
+                partials++;
+                previews.push({ name: file.name, sheetName, error: err.message });
+                self.postMessage({ type: 'progress', index: i, ok: false, error: err.message, sheetName });
+            }
+        }
+
+        if (successCount === 0) {
+            self.postMessage({ type: 'fail', message: 'All files failed to parse. Check that you are uploading Softech sellout .htm reports.' });
+            return;
+        }
+
+        self.postMessage({ type: 'building' });
+        const written = await workbook.xlsx.writeBuffer();
+
+        // ExcelJS returns a Uint8Array-like in the browser, not a raw ArrayBuffer.
+        // Normalise to the underlying ArrayBuffer so it can be transferred (zero-copy).
+        const ab = (written instanceof ArrayBuffer)
+            ? written
+            : (written && written.buffer instanceof ArrayBuffer
+                ? written.buffer.slice(written.byteOffset, written.byteOffset + written.byteLength)
+                : null);
+
+        if (ab) {
+            self.postMessage(
+                { type: 'done', buffer: ab, previews, totalRows, sheetCount: successCount, partials },
+                [ab]
+            );
+        } else {
+            // Fallback: let structured clone copy it.
+            self.postMessage({ type: 'done', buffer: written, previews, totalRows, sheetCount: successCount, partials });
+        }
+    } catch (err) {
+        self.postMessage({ type: 'fail', message: err.message });
+    }
+};
+</script>
+
+
+<!-- ════════════════════════════════════════════════════════
+     MAIN-THREAD UI SCRIPT (DOM only — no heavy work here)
+═════════════════════════════════════════════════════════ -->
+<script>
+/* ── Build the worker once, from the inline source above ── */
+const workerBlob = new Blob([document.getElementById('worker-src').textContent], { type: 'text/javascript' });
+const workerUrl  = URL.createObjectURL(workerBlob);
+let activeWorker = null;
+
+/* ── State ── */
+let queuedFiles   = [];
+let generatedBlob = null;
+let outputName    = 'Sellout_Export.xlsx';
+
+/* ── DOM refs ── */
+const dropZone      = document.getElementById('drop-zone');
+const fileInput     = document.getElementById('file-input');
+const fileListEl    = document.getElementById('file-list');
+const fileChipsEl   = document.getElementById('file-chips');
+const clearBtn      = document.getElementById('clear-btn');
+const processSec    = document.getElementById('process-section');
+const processBtn    = document.getElementById('process-btn');
+const statusCont    = document.getElementById('status-container');
+const statusLoading = document.getElementById('status-loading');
+const loadingTitle  = document.getElementById('loading-title');
+const loadingSub    = document.getElementById('loading-sub');
+const progressList  = document.getElementById('progress-list');
+const statusSuccess = document.getElementById('status-success');
+const successMeta    = document.getElementById('success-meta');
+const downloadBtn    = document.getElementById('download-btn');
+const statusError    = document.getElementById('status-error');
+const errorMessage   = document.getElementById('error-message');
+const previewSec     = document.getElementById('preview-section');
+const previewCards   = document.getElementById('preview-cards');
+const previewTotalLb = document.getElementById('preview-total-label');
+
+/* ── Drop zone events ── */
+dropZone.addEventListener('click', () => fileInput.click());
+['dragenter', 'dragover'].forEach(ev =>
+    dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('drag-active'); }));
+['dragleave', 'drop'].forEach(ev =>
+    dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('drag-active'); }));
+dropZone.addEventListener('drop', e => {
+    const files = Array.from(e.dataTransfer.files).filter(isHtmFile);
+    if (files.length) addFiles(files);
+    else showToast('Please drop .htm or .html files only.');
+});
+fileInput.addEventListener('change', e => {
+    const files = Array.from(e.target.files);
+    if (files.length) addFiles(files);
+    fileInput.value = '';
+});
+clearBtn.addEventListener('click', clearQueue);
+processBtn.addEventListener('click', runExtraction);
+downloadBtn.addEventListener('click', () => { if (generatedBlob) saveAs(generatedBlob, outputName); });
+
+/* ── File queue ── */
+function isHtmFile(f) { return /\.(htm|html)$/i.test(f.name); }
+
+function addFiles(newFiles) {
+    const existing = new Set(queuedFiles.map(f => f.name));
+    newFiles.forEach(f => { if (!existing.has(f.name)) { queuedFiles.push(f); existing.add(f.name); } });
+    renderFileChips();
+    resetStatus();
+}
+function clearQueue() {
+    queuedFiles = [];
+    generatedBlob = null;
+    renderFileChips();
+    resetStatus();
+    previewSec.classList.add('hidden');
+}
+function removeFile(name) {
+    queuedFiles = queuedFiles.filter(f => f.name !== name);
+    renderFileChips();
+    if (queuedFiles.length === 0) { resetStatus(); previewSec.classList.add('hidden'); }
+}
+window.removeFile = removeFile; // referenced by chip buttons
+
+function renderFileChips() {
+    fileChipsEl.innerHTML = '';
+    if (queuedFiles.length === 0) {
+        fileListEl.classList.add('hidden');
+        processSec.classList.add('hidden');
+        return;
+    }
+    fileListEl.classList.remove('hidden');
+    processSec.classList.remove('hidden');
+
+    queuedFiles.forEach((file, idx) => {
+        const sizeKb = (file.size / 1024).toFixed(1);
+        const chip = document.createElement('div');
+        chip.className = 'file-chip';
+        chip.innerHTML =
+            '<div class="chip-left">' +
+                '<span class="chip-emoji">📄</span>' +
+                '<div style="min-width:0">' +
+                    '<p class="chip-name">' + escHtml(file.name) + '</p>' +
+                    '<p class="chip-size">' + sizeKb + ' KB</p>' +
+                '</div>' +
+            '</div>' +
+            '<div class="chip-right">' +
+                '<span class="sheet-badge sheet-badge-' + (idx % 8) + '">Sheet ' + (idx + 1) + '</span>' +
+                '<button class="chip-remove" title="Remove" data-name="' + escHtml(file.name) + '">×</button>' +
+            '</div>';
+        chip.querySelector('.chip-remove').addEventListener('click', e => removeFile(e.currentTarget.dataset.name));
+        fileChipsEl.appendChild(chip);
+    });
+
+    const n = queuedFiles.length;
+    processBtn.innerHTML =
+        '<svg fill="none" viewBox="0 0 24 24" stroke="currentColor">' +
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>' +
+        '</svg>' +
+        'Extract &amp; Build Excel Workbook' +
+        '<span class="btn-count">' + n + ' file' + (n > 1 ? 's' : '') + '</span>';
+}
+
+/* ── Reset UI ── */
+function resetStatus() {
+    statusCont.classList.add('hidden');
+    [statusLoading, statusSuccess, statusError, progressList].forEach(el => el.classList.add('hidden'));
+    generatedBlob = null;
+}
+
+/* ── Extraction: hand everything to the worker ── */
+function runExtraction() {
+    if (!queuedFiles.length) return;
+    if (activeWorker) activeWorker.terminate();
+
+    resetStatus();
+    statusCont.classList.remove('hidden');
+    statusLoading.classList.remove('hidden');
+    progressList.classList.remove('hidden');
+    progressList.innerHTML = '';
+    previewSec.classList.add('hidden');
+    previewCards.innerHTML = '';
+    processBtn.disabled = true;
+
+    const n = queuedFiles.length;
+    loadingTitle.textContent = 'Processing ' + n + ' file' + (n > 1 ? 's' : '') + '…';
+    loadingSub.textContent   = 'Extracting table data from Softech reports';
+
+    queuedFiles.forEach((f, i) => appendProgressRow('prog-' + i, f.name, i));
+
+    const worker = new Worker(workerUrl);
+    activeWorker = worker;
+
+    worker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'progress') {
+            if (msg.ok) setProgressDone('prog-' + msg.index, msg.rowCount, msg.sheetName);
+            else        setProgressError('prog-' + msg.index, msg.error);
+        } else if (msg.type === 'building') {
+            loadingTitle.textContent = 'Building Excel workbook…';
+            loadingSub.textContent   = 'Finalising formatting and writing file';
+        } else if (msg.type === 'done') {
+            finishSuccess(msg);
+            cleanupWorker();
+        } else if (msg.type === 'fail') {
+            showStatus('error', msg.message);
+            cleanupWorker();
+        }
+    };
+    worker.onerror = (err) => {
+        showStatus('error', 'Worker error: ' + (err.message || 'unknown error'));
+        cleanupWorker();
+    };
+
+    function cleanupWorker() {
+        processBtn.disabled = false;
+        if (activeWorker === worker) activeWorker = null;
+        worker.terminate();
+    }
+
+    // File objects are structured-cloneable — no copy of file bytes is made here.
+    worker.postMessage({ files: queuedFiles });
+}
+
+function finishSuccess(msg) {
+    generatedBlob = new Blob([msg.buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    const stem  = stemName(queuedFiles[0].name).replace(/[^\w\-]/g, '_');
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    outputName  = stem + '_extracted_' + today + '.xlsx';
+
+    successMeta.textContent =
+        msg.sheetCount + ' sheet' + (msg.sheetCount > 1 ? 's' : '') + ' · ' +
+        msg.totalRows + ' rows extracted' +
+        (msg.partials ? ' · ⚠ ' + msg.partials + ' file' + (msg.partials > 1 ? 's' : '') + ' had errors' : '');
+
+    showStatus('success');
+    renderPreview(msg.previews);
+}
+
+/* ── Progress rows ── */
+function appendProgressRow(id, fileName, idx) {
+    const div = document.createElement('div');
+    div.id = id;
+    div.className = 'progress-row';
+    div.innerHTML =
+        '<svg class="spinner spin-sm" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">' +
+            '<circle class="op-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>' +
+            '<path class="op-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>' +
+        '</svg>' +
+        '<div class="pr-body">' +
+            '<p class="pr-name">' + escHtml(fileName) + '</p>' +
+            '<p class="pr-sheet" id="' + id + '-sheet"></p>' +
+        '</div>' +
+        '<span class="pr-label" id="' + id + '-label">Parsing…</span>';
+    progressList.appendChild(div);
+}
+function setProgressDone(id, rowCount, sheetName) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('done');
+    el.querySelector('.spinner').outerHTML =
+        '<svg class="icon-check" fill="none" viewBox="0 0 24 24" stroke="currentColor">' +
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+    document.getElementById(id + '-sheet').innerHTML =
+        '→ sheet: <span class="badge-inline sheet-badge-0">' + escHtml(sheetName) + '</span>';
+    document.getElementById(id + '-label').textContent = rowCount + ' rows ✓';
+}
+function setProgressError(id, msg) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('failed');
+    el.querySelector('.spinner').outerHTML =
+        '<svg class="icon-x" fill="none" viewBox="0 0 24 24" stroke="currentColor">' +
+            '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
+    document.getElementById(id + '-label').textContent = 'Error';
+    const p = document.createElement('p');
+    p.className = 'pr-error';
+    p.textContent = msg;
+    el.querySelector('.pr-body').appendChild(p);
+}
+
+/* ── Preview ── */
+function fmt(n, minD, maxD) {
+    return n.toLocaleString(undefined, { minimumFractionDigits: minD, maximumFractionDigits: maxD });
+}
+function renderPreview(previews) {
+    previewCards.innerHTML = '';
+    let grandTotal = 0, grandQty = 0;
+
+    previews.forEach((r, idx) => {
+        const card = document.createElement('div');
+        card.className = 'preview-card';
+
+        if (r.error) {
+            card.innerHTML =
+                '<div class="pc-head error">' +
+                    '<span style="color:var(--rose-500);font-weight:700">✗</span>' +
+                    '<span class="pc-title">' + escHtml(r.name) + '</span>' +
+                    '<span class="pc-err">' + escHtml(r.error) + '</span>' +
+                '</div>';
+        } else {
+            grandQty   += r.qtySum;
+            grandTotal += r.totalSum;
+            const moreCount = r.rowCount - r.preview.length;
+
+            const bodyRows = r.preview.map(row =>
+                '<tr>' +
+                    '<td class="cell-code">' + escHtml(String(row.code)) + '</td>' +
+                    '<td class="cell-item">' + escHtml(row.item) + '</td>' +
+                    '<td class="cell-num">' + fmt(row.quantity, 2, 3) + '</td>' +
+                    '<td class="cell-num strong">' + fmt(row.total, 2, 2) + '</td>' +
+                '</tr>').join('');
+
+            const moreRow = moreCount > 0
+                ? '<tr class="more-row"><td colspan="4">… and ' + moreCount +
+                  ' more row' + (moreCount > 1 ? 's' : '') + ' (all included in Excel)</td></tr>'
+                : '';
+
+            card.innerHTML =
+                '<div class="pc-head">' +
+                    '<span class="sheet-badge sheet-badge-' + (idx % 8) + '">Sheet ' + (idx + 1) + '</span>' +
+                    '<span class="pc-title">' + escHtml(r.sheetName) + '</span>' +
+                    '<span class="pc-meta">' + r.rowCount + ' rows</span>' +
+                '</div>' +
+                '<div class="pc-table-wrap"><table class="preview">' +
+                    '<thead><tr>' +
+                        '<th class="ta-left">Code</th><th class="ta-left">Item</th>' +
+                        '<th class="ta-right">Qty</th><th class="ta-right">Total</th>' +
+                    '</tr></thead>' +
+                    '<tbody>' + bodyRows + moreRow + '</tbody>' +
+                    '<tfoot><tr>' +
+                        '<td colspan="2">TOTAL</td>' +
+                        '<td class="cell-num">' + fmt(r.qtySum, 2, 3) + '</td>' +
+                        '<td class="cell-num">' + fmt(r.totalSum, 2, 2) + '</td>' +
+                    '</tr></tfoot>' +
+                '</table></div>';
+        }
+        previewCards.appendChild(card);
+    });
+
+    previewTotalLb.textContent =
+        'Grand total: ' + fmt(grandTotal, 2, 2) + ' · Qty: ' + fmt(grandQty, 3, 3);
+    previewSec.classList.remove('hidden');
+}
+
+/* ── Status helpers ── */
+function showStatus(state, msg) {
+    statusCont.classList.remove('hidden');
+    statusLoading.classList.add('hidden');
+    statusSuccess.classList.add('hidden');
+    statusError.classList.add('hidden');
+    if (state === 'success') {
+        statusSuccess.classList.remove('hidden');
+    } else if (state === 'error') {
+        statusError.classList.remove('hidden');
+        errorMessage.textContent = msg || '';
+        processBtn.disabled = false;
+    }
+}
+function showToast(msg) {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.className = 'toast';
+    document.body.appendChild(t);
+    requestAnimationFrame(() => { t.style.opacity = '1'; });
+    setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 3000);
+}
+
+/* ── Utils ── */
+function stemName(filename) { return filename.replace(/\.[^.]+$/, ''); }
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/* Render the initial (empty) process button label. */
+renderFileChips();
+</script>
+
+<!--
+═══════════════════════════════════════════════════════════════
+  PRODUCTION BUILD NOTE (Tailwind, if you ever want it back)
+───────────────────────────────────────────────────────────────
+  This file now ships hand-written CSS, so no Tailwind is needed and the
+  browser does zero on-the-fly CSS computation. If you prefer to author in
+  Tailwind, compile it ahead of time with the CLI instead of the browser
+  script (never ship @tailwindcss/browser to production):
+
+    1. npm install -D tailwindcss @tailwindcss/cli
+    2. Create input.css:
+         @import "tailwindcss";
+         @source "./sellout_converter.html";
+    3. Build a static stylesheet:
+         npx @tailwindcss/cli -i ./input.css -o ./styles.css --minify
+    4. Replace the <style> block with:
+         <link rel="stylesheet" href="./styles.css">
+
+  The CLI scans your markup at build time and emits only the classes you
+  actually use — a tiny static file, no runtime JIT.
+═══════════════════════════════════════════════════════════════
+-->
+</body>
+</html>
